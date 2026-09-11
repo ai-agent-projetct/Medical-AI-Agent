@@ -1,25 +1,36 @@
-import React from 'react';
-import { Video, Check, X, ShieldAlert, Monitor, Clock, Play } from 'lucide-react';
+import React, { useState } from 'react';
+import { Video, Check, X, ShieldAlert, Clock, Link as LinkIcon } from 'lucide-react';
+import { callLink } from '../firebase';
 
-export default function OnlineConsultations({ 
-  appointments, 
-  currentRole 
+export default function OnlineConsultations({
+  appointments,
+  setAppointments,
+  currentRole
 }) {
+  const [copied, setCopied] = useState(null);
   // Filters to find only Online consultations
   const onlineAppts = appointments.filter(apt => apt.type === 'Online');
+  const openRooms = onlineAppts
+    .filter(a => !['Completed', 'Cancelled', 'No-Show'].includes(a.status))
+    .sort((a, b) => `${a.date}${a.time}`.localeCompare(`${b.date}${b.time}`));
+  const canJoin = currentRole !== 'Billing Staff';
+
+  const joinCall = (apt) => {
+    setAppointments(prev => prev.map(a => a.id === apt.id ? { ...a, status: 'In Consultation' } : a));
+    window.open(`${callLink(apt.id)}?name=${encodeURIComponent(apt.doctor)}`, '_blank', 'noopener');
+  };
+  const copyPatientLink = async (apt) => {
+    await navigator.clipboard.writeText(callLink(apt.id));
+    setCopied(apt.id);
+  };
+  const complete = (apt) => setAppointments(prev => prev.map(a => a.id === apt.id ? { ...a, status: 'Completed' } : a));
 
   // Compute stats
   const total = onlineAppts.length;
   const completed = onlineAppts.filter(a => a.status === 'Completed').length;
-  const ongoing = onlineAppts.filter(a => a.status === 'Checked In' || a.status === 'Waiting').length;
+  const ongoing = onlineAppts.filter(a => ['Checked In', 'Waiting', 'In Consultation'].includes(a.status)).length;
   const cancelled = onlineAppts.filter(a => a.status === 'Cancelled').length;
   const noShow = onlineAppts.filter(a => a.status === 'No-Show').length;
-
-  const mockRooms = [
-    { id: 'ROOM-441', doctor: 'Dr. Priya Sharma', patient: 'Priya Sharma', startTime: '11:00 AM', status: 'Ongoing', duration: '12m 45s', ping: '15ms (Excellent)' },
-    { id: 'ROOM-442', doctor: 'Dr. Sarah Mathews', patient: 'Meena Iyer', startTime: '01:00 PM', status: 'Waiting', duration: '00:00', ping: 'N/A' },
-    { id: 'ROOM-443', doctor: 'Dr. Arun Kumar', patient: 'Sanjay R.', startTime: '02:00 PM', status: 'Scheduled', duration: '00:00', ping: 'N/A' }
-  ];
 
   return (
     <div className="page-container">
@@ -69,43 +80,53 @@ export default function OnlineConsultations({
         {/* Left Side: Room Monitor */}
         <div className="card">
           <div className="card-header">
-            <h3>Live Tele-Rooms Monitor</h3>
-            <span className="badge badge-info">Admin View</span>
+            <h3>Video Consultation Rooms</h3>
+            <span className="badge badge-info">ZegoCloud</span>
           </div>
 
           <div className="table-container">
             <table className="table-list">
               <thead>
                 <tr>
-                  <th>Room ID</th>
+                  <th>Token</th>
                   <th>Doctor</th>
                   <th>Patient</th>
-                  <th>Scheduled Time</th>
-                  <th>Duration</th>
-                  <th>Network Health</th>
+                  <th>Date / Time</th>
                   <th>Status</th>
+                  <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {mockRooms.map((room, idx) => (
-                  <tr key={idx}>
-                    <td><strong>{room.id}</strong></td>
-                    <td>{room.doctor}</td>
-                    <td>{room.patient}</td>
-                    <td>{room.startTime}</td>
-                    <td>{room.duration}</td>
+                {openRooms.length === 0 && (
+                  <tr><td colSpan="6" style={{ textAlign: 'center', padding: '24px', color: 'var(--text-muted)' }}>No upcoming online consultations.</td></tr>
+                )}
+                {openRooms.map((apt) => (
+                  <tr key={apt.id}>
+                    <td><strong>{apt.token ? `#${apt.token}` : apt.id}</strong></td>
+                    <td>{apt.doctor}</td>
+                    <td>{apt.patient}</td>
+                    <td>{apt.date} · {apt.time}</td>
                     <td>
-                      <span style={{ fontSize: '0.8rem', color: room.ping.includes('Excellent') ? 'var(--success)' : 'var(--text-muted)' }}>
-                        {room.ping}
+                      <span className={`badge ${apt.status === 'In Consultation' ? 'badge-success' : 'badge-warning'}`}>
+                        {apt.status}
                       </span>
                     </td>
                     <td>
-                      <span className={`badge ${
-                        room.status === 'Ongoing' ? 'badge-success' : 
-                        room.status === 'Waiting' ? 'badge-warning' : 'badge-secondary'
-                      }`}>
-                        {room.status}
-                      </span>
+                      {canJoin && (
+                        <div style={{ display: 'flex', gap: '6px' }}>
+                          <button className="btn btn-primary" style={{ padding: '4px 8px', fontSize: '0.78rem' }} onClick={() => joinCall(apt)}>
+                            <Video size={12} /> Join
+                          </button>
+                          <button className="btn btn-secondary" style={{ padding: '4px 8px', fontSize: '0.78rem' }} onClick={() => copyPatientLink(apt)}>
+                            <LinkIcon size={12} /> {copied === apt.id ? 'Copied' : 'Patient link'}
+                          </button>
+                          {apt.status === 'In Consultation' && (
+                            <button className="btn btn-success" style={{ padding: '4px 8px', fontSize: '0.78rem' }} onClick={() => complete(apt)}>
+                              Complete
+                            </button>
+                          )}
+                        </div>
+                      )}
                     </td>
                   </tr>
                 ))}

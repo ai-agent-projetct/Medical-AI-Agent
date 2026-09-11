@@ -12,6 +12,8 @@
     "@react-three/drei": "^9.112.0",
     "@react-three/fiber": "^8.17.0",
     "@studio-freight/lenis": "^1.0.42",
+    "@zegocloud/zego-uikit-prebuilt": "^2.18.4",
+    "firebase": "^12.19.0",
     "framer-motion": "^11.18.0",
     "gsap": "^3.12.5",
     "lucide-react": "^1.30.0",

@@ -1,5 +1,8 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Search, Plus, Calendar, Check, X, Clock, Video, User } from 'lucide-react';
+import { freeSlots } from '../firebase';
+
+const today = new Date().toLocaleDateString('en-CA'); // local YYYY-MM-DD
 
 export default function Appointments({ 
   appointments, 
@@ -18,12 +21,35 @@ export default function Appointments({
   
   // States for new booking
   const [newApt, setNewApt] = useState({
-    patient: '', doctor: '', department: '', date: '2026-08-09', time: '10:00 AM', status: 'Confirmed', type: 'Offline', fee: 500
+    patient: '', doctor: '', department: '', date: today, time: '10:00 AM', status: 'Confirmed', type: 'Offline', visitType: 'General', fee: 500
   });
 
   const [rescheduleData, setRescheduleData] = useState({
-    date: '2026-08-09', time: '10:00 AM'
+    date: today, time: '10:00 AM'
   });
+  const [slots, setSlots] = useState([]);
+
+  // Offer only the doctor's free slots (their schedule from the mobile app, minus existing bookings).
+  const slotDoctor = showRescheduleModal ? selectedApt?.doctor : newApt.doctor;
+  const slotDate = showRescheduleModal ? rescheduleData.date : newApt.date;
+  useEffect(() => {
+    if (!showAddModal && !showRescheduleModal) return;
+    let live = true;
+    freeSlots(doctors.find(d => d.name === slotDoctor), slotDate, appointments).then(free => {
+      if (!live) return;
+      setSlots(free);
+      const pick = prev => ({ ...prev, time: free.includes(prev.time) ? prev.time : (free[0] ?? '') });
+      if (showRescheduleModal) setRescheduleData(pick); else setNewApt(pick);
+    }).catch(err => console.error('slots', err));
+    return () => { live = false; };
+  }, [showAddModal, showRescheduleModal, slotDoctor, slotDate, appointments, doctors]);
+
+  const slotSelect = (value, onChange) => (
+    <select className="form-input" required value={value} onChange={onChange}>
+      {slots.length === 0 && <option value="">No free slots on this day</option>}
+      {slots.map(s => <option key={s} value={s}>{s}</option>)}
+    </select>
+  );
 
   // Setup default values when opening modal
   const handleOpenAddModal = () => {
@@ -31,10 +57,11 @@ export default function Appointments({
       patient: patients[0]?.name || '',
       doctor: doctors[0]?.name || '',
       department: departments[0]?.name || '',
-      date: '2026-08-09',
+      date: today,
       time: '10:00 AM',
       status: 'Confirmed',
       type: 'Offline',
+      visitType: 'General',
       fee: doctors[0]?.fee || 500
     });
     setShowAddModal(true);
@@ -87,10 +114,10 @@ export default function Appointments({
                           apt.id.toLowerCase().includes(searchTerm.toLowerCase());
     
     if (activeTab === 'Today') {
-      return matchesSearch && apt.date === '2026-08-09';
+      return matchesSearch && apt.date === today;
     }
     if (activeTab === 'Upcoming') {
-      return matchesSearch && apt.date > '2026-08-09';
+      return matchesSearch && apt.date > today;
     }
     if (activeTab === 'No-Show') {
       return matchesSearch && apt.status === 'No-Show';
@@ -165,7 +192,7 @@ export default function Appointments({
               ) : (
                 filteredAppointments.map((apt, idx) => (
                   <tr key={idx}>
-                    <td><strong>{apt.id}</strong></td>
+                    <td><strong>{apt.token ? `#${apt.token}` : apt.id}</strong></td>
                     <td>{apt.patient}</td>
                     <td>{apt.doctor}</td>
                     <td>{apt.department}</td>
@@ -182,7 +209,7 @@ export default function Appointments({
                     <td>
                       <span className={`badge ${
                         apt.status === 'Confirmed' ? 'badge-success' : 
-                        apt.status === 'Checked In' ? 'badge-info' : 
+                        apt.status === 'Checked In' || apt.status === 'In Consultation' ? 'badge-info' : 
                         apt.status === 'Waiting' ? 'badge-warning' : 
                         apt.status === 'No-Show' ? 'badge-danger' : 'badge-secondary'
                       }`}>
@@ -191,7 +218,7 @@ export default function Appointments({
                     </td>
                     <td>
                       <div style={{ display: 'flex', gap: '6px' }}>
-                        {apt.status === 'Confirmed' && (
+                        {(apt.status === 'Confirmed' || apt.status === 'Rescheduled') && (
                           <>
                             <button className="btn btn-success" style={{ padding: '4px 8px', fontSize: '0.78rem' }} onClick={() => updateAptStatus(apt.id, 'Checked In')}>
                               Check In
@@ -209,7 +236,7 @@ export default function Appointments({
                             Move to Waiting
                           </button>
                         )}
-                        {apt.status === 'Waiting' && (
+                        {(apt.status === 'Waiting' || apt.status === 'In Consultation') && (
                           <button className="btn btn-success" style={{ padding: '4px 8px', fontSize: '0.78rem' }} onClick={() => updateAptStatus(apt.id, 'Completed')}>
                             Complete
                           </button>
@@ -300,15 +327,19 @@ export default function Appointments({
                 </div>
                 <div className="form-group">
                   <label>Select Time Slot</label>
-                  <input 
-                    type="text" 
-                    className="form-input" 
-                    required 
-                    placeholder="e.g. 10:30 AM"
-                    value={newApt.time}
-                    onChange={(e) => setNewApt(prev => ({ ...prev, time: e.target.value }))}
-                  />
+                  {slotSelect(newApt.time, (e) => setNewApt(prev => ({ ...prev, time: e.target.value })))}
                 </div>
+              </div>
+
+              <div className="form-group">
+                <label>Visit Type</label>
+                <select
+                  className="form-input"
+                  value={newApt.visitType}
+                  onChange={(e) => setNewApt(prev => ({ ...prev, visitType: e.target.value }))}
+                >
+                  {['General', 'New visit', 'Follow-up', 'Consultation'].map(v => <option key={v} value={v}>{v}</option>)}
+                </select>
               </div>
 
               <div className="form-input-row">
@@ -367,14 +398,7 @@ export default function Appointments({
                 </div>
                 <div className="form-group">
                   <label>New Time Slot</label>
-                  <input 
-                    type="text" 
-                    className="form-input" 
-                    required 
-                    placeholder="e.g. 02:30 PM"
-                    value={rescheduleData.time}
-                    onChange={(e) => setRescheduleData(prev => ({ ...prev, time: e.target.value }))}
-                  />
+                  {slotSelect(rescheduleData.time, (e) => setRescheduleData(prev => ({ ...prev, time: e.target.value })))}
                 </div>
               </div>
             </div>

@@ -1,0 +1,62 @@
+rules_version = '2';
+
+// Shared by the web portal and the Flutter app.
+// Roles live in users/{uid}.role: admin | hospital_admin | doctor | receptionist | billing.
+// Doctors self-register from the mobile app (role "doctor" only); every other role is set by an admin.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function me() { return request.auth.uid; }
+    function role() {
+      return exists(/databases/$(database)/documents/users/$(me()))
+        ? get(/databases/$(database)/documents/users/$(me())).data.role : '';
+    }
+    function isAdmin() { return signedIn() && role() in ['admin', 'hospital_admin']; }
+    function isClinical() { return signedIn() && role() in ['admin', 'hospital_admin', 'doctor', 'receptionist']; }
+    function isStaff() { return signedIn() && role() in ['admin', 'hospital_admin', 'doctor', 'receptionist', 'billing']; }
+
+    match /users/{uid} {
+      allow read: if signedIn() && (me() == uid || isAdmin());
+      allow create: if signedIn() && me() == uid && request.resource.data.role == 'doctor';
+      // Nobody can change their own role; admins can change anyone's.
+      allow update: if isAdmin() || (signedIn() && me() == uid && request.resource.data.role == resource.data.role);
+      allow delete: if isAdmin() || (signedIn() && me() == uid);
+    }
+
+    match /doctors/{doctorId} {
+      allow read: if isStaff();
+      allow write: if isAdmin() || (signedIn() && me() == doctorId);
+    }
+
+    match /patients/{patientId} {
+      allow read: if isStaff();
+      allow write: if isClinical();
+
+      // Medical records: billing staff have no clinical access.
+      match /records/{recordId} {
+        allow read, create: if isClinical();
+        allow update, delete: if isAdmin() || (isClinical() && resource.data.doctorId == me());
+      }
+    }
+
+    match /appointments/{appointmentId} {
+      allow read: if isStaff();
+      allow create, update: if isClinical();
+      allow delete: if isAdmin();
+    }
+
+    match /schedules/{doctorId} {
+      allow read: if isStaff();
+      allow write: if isAdmin() || (signedIn() && me() == doctorId);
+    }
+
+    match /notifications/{id} {
+      allow read, update, delete: if signedIn() && resource.data.userId == me();
+      allow create: if isStaff();
+    }
+
+    match /counters/{id} {
+      allow read, write: if isClinical();
+    }
+  }
+}

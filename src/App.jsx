@@ -1,9 +1,16 @@
-import React, { useState } from 'react';
-import { 
-  Activity, Users, Calendar, Phone, Video, Sparkles, CreditCard, 
+import React, { Suspense, lazy, useEffect, useState } from 'react';
+import {
+  Activity, Users, Calendar, Phone, Video, Sparkles, CreditCard,
   TrendingUp, UserPlus, ShieldCheck, Bell, Settings, HeartPulse, FileText,
-  Lock, AlertCircle, Pill, PenTool, Eye, Layers, HelpCircle, Shield, Zap, Bot, Stethoscope, Cpu
+  Lock, AlertCircle, Pill, PenTool, Eye, Layers, HelpCircle, Shield, Zap, Bot, Stethoscope, Cpu, LogOut
 } from 'lucide-react';
+import { onAuthStateChanged, signOut } from 'firebase/auth';
+import { serverTimestamp } from 'firebase/firestore';
+import {
+  auth, firebaseEnabled, useLiveCollection, nextToken, loadUserRole, ROLE_LABELS,
+} from './firebase';
+import Login from './pages/Login';
+const CallRoom = lazy(() => import('./pages/CallRoom')); // Zego SDK is ~5 MB; only load it for calls
 
 import Dashboard from './pages/Dashboard';
 import Doctors from './pages/Doctors';
@@ -34,13 +41,48 @@ import AgenticAiConsole from './pages/AgenticAiConsole';
 import AiPrescriptionPrinter from './pages/AiPrescriptionPrinter';
 import FuturisticCareMatrix from './pages/FuturisticCareMatrix';
 
+// Routes: #/call/<appointmentId> is the public video room (patients have no account);
+// everything else is the staff portal, behind Firebase Auth when Firebase is configured.
 export default function App() {
-  const [currentRole, setCurrentRole] = useState('Super Admin');
+  const callMatch = window.location.hash.match(/^#\/call\/([\w-]+)/);
+  const [session, setSession] = useState(firebaseEnabled ? undefined : { role: 'Super Admin', isAdmin: true });
+
+  useEffect(() => {
+    if (!firebaseEnabled || callMatch) return undefined;
+    return onAuthStateChanged(auth, async (user) => {
+      if (!user) return setSession(null);
+      const role = await loadUserRole(user.uid).catch(() => null);
+      return setSession({ user, role: ROLE_LABELS[role] ?? null, isAdmin: role === 'admin' });
+    });
+  }, []);
+
+  if (callMatch) {
+    const name = new URLSearchParams(window.location.hash.split('?')[1]).get('name') ?? '';
+    return <Suspense fallback={null}><CallRoom roomId={callMatch[1]} presetName={name} /></Suspense>;
+  }
+  if (session === undefined) return null;
+  if (session === null) return <Login />;
+  if (!session.role) {
+    return (
+      <div className="page-container" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh' }}>
+        <div className="card" style={{ maxWidth: 440 }}>
+          <h3>No portal role assigned</h3>
+          <p style={{ color: 'var(--text-muted)' }}>Ask the hospital admin to set your role for {session.user.email}.</p>
+          <button className="btn btn-secondary" onClick={() => signOut(auth)}><LogOut size={16} /> Sign out</button>
+        </div>
+      </div>
+    );
+  }
+  return <Portal initialRole={session.role} canSwitchRole={session.isAdmin} />;
+}
+
+function Portal({ initialRole, canSwitchRole }) {
+  const [currentRole, setCurrentRole] = useState(initialRole);
   const [activeTab, setActiveTab] = useState('dashboard');
   const [showNotificationsDrawer, setShowNotificationsDrawer] = useState(false);
 
   // 1. Initial State for Doctors
-  const [doctors, setDoctors] = useState([
+  const [doctors, setDoctors, sampleDoctors] = useLiveCollection('doctors', [
     { id: 'DOC-001', name: 'Dr. Arun Kumar', department: 'Cardiology', specialization: 'Senior Cardiologist', qualification: 'MD DM (Cardio)', experience: '15 Years', fee: 800, availableDays: ['Mon', 'Wed', 'Fri'], availableTime: '09:00 AM - 01:00 PM', onlineConsultation: true, status: 'Active' },
     { id: 'DOC-002', name: 'Dr. Priya Sharma', department: 'Cardiology', specialization: 'Interventional Cardiology', qualification: 'MD (Gen Med) DNB', experience: '8 Years', fee: 600, availableDays: ['Tue', 'Thu', 'Sat'], availableTime: '10:00 AM - 02:00 PM', onlineConsultation: true, status: 'Active' },
     { id: 'DOC-003', name: 'Dr. Rajesh Kumar', department: 'Orthopedics', specialization: 'HOD Orthopedics', qualification: 'MS (Ortho) MCh', experience: '18 Years', fee: 1000, availableDays: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'], availableTime: '09:00 AM - 05:00 PM', onlineConsultation: true, status: 'Active' },
@@ -49,7 +91,7 @@ export default function App() {
   ]);
 
   // 2. Initial State for Patients
-  const [patients, setPatients] = useState([
+  const [patients, setPatients, samplePatients] = useLiveCollection('patients', [
     { id: 'PAT-101', name: 'Ravi Kumar', phone: '+91 98456 73221', email: 'ravi@gmail.com', dob: '1988-04-12', gender: 'Male', emergencyContactName: 'Sita Kumar (Wife)', emergencyContactPhone: '+91 98456 73222', status: 'Active' },
     { id: 'PAT-102', name: 'Priya Sharma', phone: '+91 99456 88734', email: 'priya@gmail.com', dob: '1993-08-25', gender: 'Female', emergencyContactName: 'Karan Sharma (Father)', emergencyContactPhone: '+91 99456 88730', status: 'Active' },
     { id: 'PAT-103', name: 'Karthik B.', phone: '+91 90876 54321', email: 'karthik@gmail.com', dob: '1980-11-05', gender: 'Male', emergencyContactName: 'Balan (Father)', emergencyContactPhone: '+91 90876 54320', status: 'Active' },
@@ -65,14 +107,36 @@ export default function App() {
   ]);
 
   // 4. Initial State for Appointments
-  const [appointments, setAppointments] = useState([
+  const [appointments, setAppointments, sampleAppointments] = useLiveCollection('appointments', [
     { id: 'APT-25871', patient: 'Ravi Kumar', doctor: 'Dr. Rajesh Kumar', department: 'Orthopedics', date: '2026-08-09', time: '10:00 AM', status: 'Confirmed', type: 'Offline', fee: 1000 },
     { id: 'APT-25872', patient: 'Priya Sharma', doctor: 'Dr. Priya Sharma', department: 'Cardiology', date: '2026-08-09', time: '11:00 AM', status: 'Checked In', type: 'Online', fee: 600 },
     { id: 'APT-25873', patient: 'Karthik B.', doctor: 'Dr. Rajesh Kumar', department: 'Orthopedics', date: '2026-08-09', time: '12:00 PM', status: 'Waiting', type: 'Offline', fee: 1000 },
     { id: 'APT-25874', patient: 'Meena Iyer', doctor: 'Dr. Sarah Mathews', department: 'Dermatology', date: '2026-08-09', time: '01:00 PM', status: 'Completed', type: 'Online', fee: 700 },
     { id: 'APT-25875', patient: 'Sanjay R.', doctor: 'Dr. Arun Kumar', department: 'Cardiology', date: '2026-08-09', time: '02:00 PM', status: 'Confirmed', type: 'Offline', fee: 800 },
     { id: 'APT-25876', patient: 'Ravi Kumar', doctor: 'Dr. Arun Kumar', department: 'Cardiology', date: '2026-08-10', time: '12:15 PM', status: 'Confirmed', type: 'Offline', fee: 800 }
-  ]);
+  ], linkAppointment);
+
+  // Every appointment write (scheduler, dashboard quick-book, AI console) routes through here, so the
+  // mobile app can find it: it queries by doctorId and shows the token number.
+  async function linkAppointment(apt, isNew) {
+    const doctor = doctors.find(d => d.name === apt.doctor);
+    const patient = patients.find(p => p.name === apt.patient);
+    return {
+      ...apt,
+      doctorId: apt.doctorId ?? doctor?.id ?? null,
+      patientId: apt.patientId ?? patient?.id ?? null,
+      patientPhone: apt.patientPhone ?? patient?.phone ?? '',
+      visitType: apt.visitType ?? 'General',
+      ...(isNew ? { token: apt.token ?? await nextToken(), createdAt: serverTimestamp() } : {}),
+    };
+  }
+
+  const canSeed = firebaseEnabled && canSwitchRole && doctors.length === 0 && patients.length === 0;
+  const loadSampleData = () => {
+    setDoctors(sampleDoctors);
+    setPatients(samplePatients);
+    setAppointments(sampleAppointments);
+  };
 
   // 5. Initial State for Payments
   const [payments, setPayments] = useState([
@@ -302,7 +366,10 @@ export default function App() {
           </div>
 
           <div className="header-controls">
-            <div className="role-switcher-container">
+            {canSeed && (
+              <button className="btn btn-secondary" onClick={loadSampleData}>Load sample data</button>
+            )}
+            {canSwitchRole && <div className="role-switcher-container">
               <span>Current Role:</span>
               <select 
                 className="role-dropdown" 
@@ -322,7 +389,13 @@ export default function App() {
                 <option value="Receptionist">Receptionist</option>
                 <option value="Billing Staff">Billing Staff</option>
               </select>
-            </div>
+            </div>}
+
+            {firebaseEnabled && (
+              <button className="header-icon-btn" title="Sign out" aria-label="Sign out" onClick={() => signOut(auth)}>
+                <LogOut size={18} />
+              </button>
+            )}
 
             <button className="header-icon-btn" onClick={() => setShowNotificationsDrawer(!showNotificationsDrawer)}>
               <Bell size={18} />
@@ -459,8 +532,9 @@ export default function App() {
                 />
               )}
               {activeTab === 'online' && (
-                <OnlineConsultations 
+                <OnlineConsultations
                   appointments={appointments}
+                  setAppointments={setAppointments}
                   currentRole={currentRole}
                 />
               )}
