@@ -101,7 +101,7 @@ class DashboardTab extends StatelessWidget {
                     physics: const NeverScrollableScrollPhysics(),
                     mainAxisSpacing: 10,
                     crossAxisSpacing: 10,
-                    childAspectRatio: 1.45,
+                    childAspectRatio: 1.3, // 1.45 overflowed by 8 px on 360 dp phones
                     children: [
                       StatCard(icon: Icons.calendar_today_outlined, value: '${all.length}', label: 'Appointments', badge: 'Today', badgeColor: kMuted),
                       StatCard(icon: Icons.videocam_outlined, value: '${all.where((a) => a.online).length}', label: 'Online consults'),

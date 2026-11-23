@@ -1,6 +1,9 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:intl/intl.dart';
+
+import 'config.dart';
 
 /// Firestore schema shared with the React portal (see ../firestore.rules):
 ///   users/{uid}                 {role}
@@ -10,7 +13,8 @@ import 'package:intl/intl.dart';
 ///                                time: "hh:mm AM", type: Offline|Online, visitType, status, token, summary}
 ///   schedules/{doctorId}        {days: {yyyy-MM-dd: {available, sessions: [{from, to}]}}}
 ///   notifications/{id}          {userId, title, body, read, createdAt}
-///   counters/appointments       {next}
+///   counters/{doctorId}_{date}  {next}  per-doctor daily OPD token
+///   bookedSlots/{doctorId}_{date} {times}  taken slots, read by the patient app (see patient/pdb.dart)
 final _fs = FirebaseFirestore.instance;
 String get uid => FirebaseAuth.instance.currentUser!.uid;
 
@@ -75,6 +79,9 @@ List<String> generateSlots(List<Map> sessions, Iterable<String> booked, {int ste
   return out;
 }
 
+/// Proof of consent stored on users/{uid} at sign-up.
+Map<String, dynamic> consentRecord() => {'consent': {'version': consentVersion, 'at': FieldValue.serverTimestamp()}};
+
 class Db {
   static DocumentReference<Json> doctor([String? id]) => _fs.doc('doctors/${id ?? uid}');
   static CollectionReference<Json> get appointments => _fs.collection('appointments');
@@ -85,17 +92,9 @@ class Db {
 
   static Future<void> createAccount({required String name, required String email, required String phone}) async {
     final batch = _fs.batch()
-      ..set(_fs.doc('users/$uid'), {'role': 'doctor', 'email': email}, SetOptions(merge: true))
+      ..set(_fs.doc('users/$uid'), {'role': 'doctor', 'email': email, ...consentRecord()}, SetOptions(merge: true))
       ..set(doctor(), {'name': name, 'email': email, 'phone': phone, 'profileComplete': false, 'status': 'Active'}, SetOptions(merge: true));
     await batch.commit();
-  }
-
-  /// Google sign-in lands here too: make sure the role + doctor docs exist.
-  static Future<void> ensureAccount(User user) async {
-    final u = await _fs.doc('users/${user.uid}').get();
-    if (!u.exists) {
-      await createAccount(name: user.displayName ?? '', email: user.email ?? '', phone: user.phoneNumber ?? '');
-    }
   }
 
   static Future<void> saveProfile(Json p) {
@@ -112,6 +111,20 @@ class Db {
       'onlineConsultation': true,
       'status': 'Active',
     }, SetOptions(merge: true));
+  }
+
+  /// Patients by name prefix (names are stored capitalised) or exact phone; at most 20, from the server.
+  static Future<List<Json>> searchPatients(String term) async {
+    final t = term.trim();
+    if (t.length < 2) return [];
+    final q = RegExp(r'^[+\d\s-]{6,}$').hasMatch(t)
+        ? patients.where('phone', isEqualTo: t)
+        : () {
+            final cap = t.split(' ').map((w) => w.isEmpty ? w : w[0].toUpperCase() + w.substring(1)).join(' ');
+            return patients.orderBy('name').startAt([cap]).endAt(['$cap']);
+          }();
+    final snap = await q.limit(20).get();
+    return snap.docs.map((d) => {...d.data(), 'id': d.id}).toList();
   }
 
   static Stream<List<Appt>> _list(Query<Json> q) =>
@@ -171,8 +184,14 @@ class Db {
     final pid = patientId ?? (await patients.add({'name': patientName, 'phone': phone, 'status': 'Active', ...extraPatient})).id;
     final ref = appointments.doc();
     final data = await _fs.runTransaction((tx) async {
-      final counter = _fs.doc('counters/appointments');
+      // Per-doctor daily OPD token (#1, #2 …) + slot lock, shared with the portal and the patient app.
+      final counter = _fs.doc('counters/${uid}_$date');
+      final slotRef = _fs.doc('bookedSlots/${uid}_$date');
+      final slot = await tx.get(slotRef);
       final c = await tx.get(counter);
+      if (List<String>.from(slot.data()?['times'] ?? []).contains(time)) {
+        throw Exception('$time is already booked. Please pick another slot.');
+      }
       final token = (c.data()?['next'] as num?)?.toInt() ?? 1;
       final data = <String, dynamic>{
         'patient': patientName,
@@ -191,6 +210,7 @@ class Db {
         'createdAt': FieldValue.serverTimestamp(),
       };
       tx.set(counter, {'next': token + 1}, SetOptions(merge: true));
+      tx.set(slotRef, {'times': FieldValue.arrayUnion([time])}, SetOptions(merge: true));
       tx.set(ref, data);
       return data;
     });
@@ -202,6 +222,8 @@ class Db {
 
   static Future<void> reschedule(Appt a, String date, String time) async {
     await appointments.doc(a.id).update({'date': date, 'time': time, 'status': 'Rescheduled'});
+    // ponytail: the old slot stays blocked for patient self-booking; free it here if clinics complain.
+    await _fs.doc('bookedSlots/${uid}_$date').set({'times': FieldValue.arrayUnion([time])}, SetOptions(merge: true));
     await notify('Appointment rescheduled', '${a.patient} moved to ${shortLabel(date)} $time');
   }
 
@@ -227,6 +249,17 @@ class Db {
 
   static Future<void> notify(String title, String body) =>
       notifications.add({'userId': uid, 'title': title, 'body': body, 'read': false, 'createdAt': FieldValue.serverTimestamp()});
+
+  /// Append-only audit trail shared with the portal (auditLogs; admins read it there).
+  static Future<void> audit(String action, String module, String details) => _fs.collection('auditLogs').add({
+        'at': FieldValue.serverTimestamp(),
+        'uid': uid,
+        'email': FirebaseAuth.instance.currentUser?.email,
+        'user': 'Doctor (app)',
+        'action': action,
+        'module': module,
+        'details': details,
+      }).then((_) {}, onError: (Object e) => debugPrint('audit log: $e'));
 
   static String shortLabel(String date) => DateFormat('EEE, MMM d').format(DateTime.parse(date));
 }

@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../db.dart';
+import '../patient/pdb.dart';
 import '../ui.dart';
 
 final _auth = FirebaseAuth.instance;
@@ -12,6 +13,9 @@ String _authMessage(Object e) => switch (e) {
       FirebaseAuthException(code: 'email-already-in-use') => 'An account already exists for this email.',
       FirebaseAuthException(code: 'weak-password') => 'Password must be at least 6 characters.',
       FirebaseAuthException(code: 'invalid-email') => 'Enter a valid email address.',
+      FirebaseAuthException(code: 'invalid-verification-code') => 'Wrong OTP. Check the SMS and try again.',
+      FirebaseAuthException(code: 'too-many-requests') => 'Too many attempts. Please wait a few minutes.',
+      FirebaseAuthException(code: 'invalid-phone-number') => 'Enter a valid mobile number.',
       FirebaseAuthException(:final message) => message ?? 'Sign-in failed.',
       _ => '$e',
     };
@@ -59,8 +63,8 @@ class SplashScreen extends StatelessWidget {
 Future<void> _google(BuildContext context) async {
   await guard(context, () async {
     final provider = GoogleAuthProvider();
-    final cred = kIsWeb ? await _auth.signInWithPopup(provider) : await _auth.signInWithProvider(provider);
-    await Db.ensureAccount(cred.user!);
+    // First-time users pick patient/doctor on the role screen (main.dart) once signed in.
+    kIsWeb ? await _auth.signInWithPopup(provider) : await _auth.signInWithProvider(provider);
   });
 }
 
@@ -148,6 +152,12 @@ class _LoginScreenState extends State<LoginScreen> {
                     ]),
                     const SizedBox(height: 16),
                     OutlinedButton.icon(
+                      onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PhoneLoginScreen())),
+                      icon: const Icon(Icons.sms_outlined),
+                      label: const Text('Login with mobile OTP'),
+                    ),
+                    const SizedBox(height: 10),
+                    OutlinedButton.icon(
                       onPressed: () => _google(context),
                       icon: const Text('G', style: TextStyle(color: Colors.red, fontWeight: FontWeight.w800, fontSize: 18)),
                       label: const Text('Continue with Google'),
@@ -183,7 +193,7 @@ class _SignupScreenState extends State<SignupScreen> {
   final _password = TextEditingController();
   final _confirm = TextEditingController();
   final _form = GlobalKey<FormState>();
-  bool _agree = false, _busy = false;
+  bool _agree = false, _busy = false, _doctor = false;
 
   Future<void> _create() async {
     if (!_form.currentState!.validate()) return;
@@ -191,8 +201,9 @@ class _SignupScreenState extends State<SignupScreen> {
     setState(() => _busy = true);
     try {
       final cred = await _auth.createUserWithEmailAndPassword(email: _email.text.trim(), password: _password.text);
-      await cred.user!.updateDisplayName(_name.text.trim());
-      await Db.createAccount(name: _name.text.trim(), email: _email.text.trim(), phone: '+91 ${_phone.text.trim()}');
+      final (name, email, phone) = (_name.text.trim(), _email.text.trim(), '+91 ${_phone.text.trim()}');
+      await (_doctor ? Db.createAccount(name: name, email: email, phone: phone) : PDb.createAccount(name: name, email: email, phone: phone));
+      await cred.user!.updateDisplayName(name);
       await cred.user!.sendEmailVerification();
       if (mounted) Navigator.of(context).popUntil((r) => r.isFirst);
     } catch (e) {
@@ -217,6 +228,15 @@ class _SignupScreenState extends State<SignupScreen> {
                   child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
                     const Logo(size: 60),
                     const SizedBox(height: 24),
+                    SegmentedButton<bool>(
+                      segments: const [
+                        ButtonSegment(value: false, label: Text("I'm a patient"), icon: Icon(Icons.favorite_border)),
+                        ButtonSegment(value: true, label: Text("I'm a doctor"), icon: Icon(Icons.medical_services_outlined)),
+                      ],
+                      selected: {_doctor},
+                      onSelectionChanged: (v) => setState(() => _doctor = v.first),
+                    ),
+                    const SizedBox(height: 16),
                     TextFormField(
                       controller: _name,
                       textCapitalization: TextCapitalization.words,
@@ -272,4 +292,97 @@ class _SignupScreenState extends State<SignupScreen> {
           ),
         ),
       );
+}
+
+/// Mobile-number login with a one-time SMS code (Firebase Phone Auth). New numbers then pick
+/// patient/doctor and give consent on the role screen.
+class PhoneLoginScreen extends StatefulWidget {
+  const PhoneLoginScreen({super.key});
+
+  @override
+  State<PhoneLoginScreen> createState() => _PhoneLoginScreenState();
+}
+
+class _PhoneLoginScreenState extends State<PhoneLoginScreen> {
+  final _phone = TextEditingController();
+  final _code = TextEditingController();
+  String? _verificationId;
+  ConfirmationResult? _webConfirm;
+  bool _busy = false;
+
+  String get _e164 => '+91${_phone.text.replaceAll(RegExp(r'\D'), '')}';
+
+  Future<void> _send() async {
+    if (!RegExp(r'^\d{10}$').hasMatch(_phone.text.trim())) return snack(context, 'Enter a 10-digit mobile number');
+    setState(() => _busy = true);
+    try {
+      if (kIsWeb) {
+        _webConfirm = await _auth.signInWithPhoneNumber(_e164); // invisible reCAPTCHA
+        setState(() {});
+      } else {
+        await _auth.verifyPhoneNumber(
+          phoneNumber: _e164,
+          verificationCompleted: (cred) => _auth.signInWithCredential(cred), // Android auto-read
+          verificationFailed: (e) { if (mounted) snack(context, _authMessage(e)); },
+          codeSent: (id, _) { if (mounted) setState(() => _verificationId = id); },
+          codeAutoRetrievalTimeout: (_) {},
+        );
+      }
+    } catch (e) {
+      if (mounted) snack(context, _authMessage(e));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _verify() async {
+    if (_code.text.trim().length != 6) return snack(context, 'Enter the 6-digit code');
+    setState(() => _busy = true);
+    try {
+      if (_webConfirm != null) {
+        await _webConfirm!.confirm(_code.text.trim());
+      } else {
+        await _auth.signInWithCredential(PhoneAuthProvider.credential(verificationId: _verificationId!, smsCode: _code.text.trim()));
+      }
+      if (mounted) Navigator.of(context).popUntil((r) => r.isFirst);
+    } catch (e) {
+      if (mounted) snack(context, _authMessage(e));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final sent = _verificationId != null || _webConfirm != null;
+    return Scaffold(
+      appBar: AppBar(title: const Text('Login with mobile number')),
+      body: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 420),
+          child: ListView(padding: const EdgeInsets.all(24), shrinkWrap: true, children: [
+            TextField(
+              controller: _phone,
+              enabled: !sent,
+              keyboardType: TextInputType.phone,
+              decoration: const InputDecoration(labelText: 'Mobile Number', prefixText: '🇮🇳 +91  '),
+            ),
+            const SizedBox(height: 14),
+            if (sent)
+              TextField(
+                controller: _code,
+                keyboardType: TextInputType.number,
+                maxLength: 6,
+                decoration: const InputDecoration(labelText: 'OTP code', prefixIcon: Icon(Icons.sms_outlined)),
+              ),
+            FilledButton(
+              onPressed: _busy ? null : (sent ? _verify : _send),
+              child: Text(sent ? 'Verify & continue' : 'Send OTP'),
+            ),
+            if (sent) TextButton(onPressed: _busy ? null : () => setState(() { _verificationId = null; _webConfirm = null; }), child: const Text('Change number')),
+          ]),
+        ),
+      ),
+    );
+  }
 }

@@ -16,7 +16,8 @@ export default function Login() {
     try {
       await signInWithEmailAndPassword(auth, email.trim(), password);
     } catch (err) {
-      setMessage(err.code === 'auth/invalid-credential' ? 'Wrong email or password.' : err.message);
+      const badLogin = ['auth/invalid-credential', 'auth/wrong-password', 'auth/user-not-found', 'auth/invalid-email'];
+      setMessage(badLogin.includes(err.code) ? 'Wrong email or password.' : err.message);
     } finally {
       setBusy(false);
     }

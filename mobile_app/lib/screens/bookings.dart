@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../chat.dart';
 import '../db.dart';
 import '../ui.dart';
 import 'home.dart';
@@ -52,7 +53,8 @@ class _BookingsTabState extends State<BookingsTab> {
             onChanged: (v) => setState(() => _q = v),
           ),
           const SizedBox(height: 10),
-          Row(children: [
+          // Wrap, not Row: date + three filters are wider than a 360 dp phone.
+          Wrap(spacing: 4, runSpacing: 6, crossAxisAlignment: WrapCrossAlignment.center, children: [
             OutlinedButton.icon(
               style: OutlinedButton.styleFrom(minimumSize: const Size(0, 42)),
               icon: const Icon(Icons.calendar_month, size: 18),
@@ -67,12 +69,8 @@ class _BookingsTabState extends State<BookingsTab> {
                 if (d != null) setState(() => _date = d);
               },
             ),
-            const Spacer(),
             for (final f in ['All', 'Upcoming', 'Completed'])
-              Padding(
-                padding: const EdgeInsets.only(left: 4),
-                child: ChoiceChip(label: Text(f), selected: _filter == f, onSelected: (_) => setState(() => _filter = f)),
-              ),
+              ChoiceChip(label: Text(f), selected: _filter == f, onSelected: (_) => setState(() => _filter = f)),
           ]),
           StreamBuilder<List<Appt>>(
             stream: Db.myDay(ymd(_date)),
@@ -185,14 +183,25 @@ class AppointmentDetailsScreen extends StatelessWidget {
                     label: const Text('Patient Arrived (Check in)'),
                   ),
                 ],
-                if (a.online) ...[
-                  const SizedBox(height: 10),
-                  OutlinedButton.icon(onPressed: () => shareCallLink(context, a), icon: const Icon(Icons.share_outlined), label: const Text('Send Video Link to Patient')),
-                ],
+                const SizedBox(height: 10),
+                OutlinedButton.icon(
+                  onPressed: () => shareCallLink(context, a),
+                  icon: const Icon(Icons.chat_outlined, color: kGreen),
+                  label: Text(a.online ? 'Send Token & Video Link on WhatsApp' : 'Send Token on WhatsApp'),
+                ),
               ],
               const SizedBox(height: 10),
               Row(children: [
                 Expanded(child: OutlinedButton.icon(onPressed: () => callPatient(context, a.phone), icon: const Icon(Icons.call_outlined), label: const Text('Call'))),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => Navigator.push(context, MaterialPageRoute(
+                        builder: (_) => ChatScreen(appointmentId: a.id, title: 'Chat · ${a.patient}', myName: a.doctor.isEmpty ? 'Doctor' : a.doctor))),
+                    icon: const Icon(Icons.chat_bubble_outline),
+                    label: const Text('Chat'),
+                  ),
+                ),
                 if (a.isOpen) ...[
                   const SizedBox(width: 10),
                   Expanded(child: OutlinedButton.icon(onPressed: () => _reschedule(context, a), icon: const Icon(Icons.refresh), label: const Text('Reschedule'))),
@@ -251,9 +260,6 @@ class _BookAppointmentScreenState extends State<BookAppointmentScreen> {
   final _age = TextEditingController();
   String _gender = 'Male';
   late Future<List<String>> _slots = Db.freeSlots(ymd(_date));
-  // ponytail: loads every patient once for local search; switch to a prefix query when the list gets large.
-  late final Future<List<Json>> _patients =
-      Db.patients.get().then((s) => s.docs.map((d) => {...d.data(), 'id': d.id}).toList());
 
   void _setDate(DateTime d) => setState(() {
         _date = d;
@@ -284,8 +290,16 @@ class _BookAppointmentScreenState extends State<BookAppointmentScreen> {
     if (!mounted) return;
     setState(() => _saving = false);
     if (!ok) return;
-    snack(context, 'Booked · Token #${booked!.token}. ${_online ? 'Share the video link with the patient.' : ''}');
-    if (_online) await shareCallLink(context, booked!);
+    final b = booked!;
+    final rootContext = Navigator.of(context, rootNavigator: true).context;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text('Booked · Token #${b.token}. ${_online ? 'Share the video link with the patient.' : ''}'),
+      behavior: SnackBarBehavior.floating,
+      duration: const Duration(seconds: 8),
+      action: SnackBarAction(label: 'WhatsApp', onPressed: () => shareCallLink(rootContext, b)),
+      persist: false, // with an action Flutter keeps it on screen by default, covering the bottom buttons
+    ));
+    if (_online) await shareCallLink(context, b);
     if (mounted) Navigator.pop(context);
   }
 
@@ -323,17 +337,15 @@ class _BookAppointmentScreenState extends State<BookAppointmentScreen> {
                 ),
               ]),
             ] else
-              FutureBuilder<List<Json>>(
-                future: _patients,
-                builder: (context, snap) => Autocomplete<Json>(
-                  displayStringForOption: (p) => '${p['name']} · ${p['phone'] ?? ''}',
-                  optionsBuilder: (v) => (snap.data ?? []).where((p) => '${p['name']} ${p['phone']}'.toLowerCase().contains(v.text.toLowerCase())).take(20),
-                  onSelected: (p) => setState(() => _patient = p),
-                  fieldViewBuilder: (context, c, focus, _) => TextField(
-                    controller: c,
-                    focusNode: focus,
-                    decoration: InputDecoration(prefixIcon: const Icon(Icons.search), labelText: snap.hasData ? 'Search patient by name or phone' : 'Loading patients…'),
-                  ),
+              // Server-side search: hospitals have tens of thousands of patients.
+              Autocomplete<Json>(
+                displayStringForOption: (p) => '${p['name']} · ${p['phone'] ?? ''}',
+                optionsBuilder: (v) => Db.searchPatients(v.text),
+                onSelected: (p) => setState(() => _patient = p),
+                fieldViewBuilder: (context, c, focus, _) => TextField(
+                  controller: c,
+                  focusNode: focus,
+                  decoration: const InputDecoration(prefixIcon: Icon(Icons.search), labelText: 'Search patient by name or phone'),
                 ),
               ),
           ],

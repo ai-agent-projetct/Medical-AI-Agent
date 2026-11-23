@@ -17,10 +17,11 @@ export default function OnlineConsultations({
 
   const joinCall = (apt) => {
     setAppointments(prev => prev.map(a => a.id === apt.id ? { ...a, status: 'In Consultation' } : a));
-    window.open(`${callLink(apt.id)}?name=${encodeURIComponent(apt.doctor)}`, '_blank', 'noopener');
+    window.open(`${callLink(apt.id, apt.callKey)}&name=${encodeURIComponent(apt.doctor)}`, '_blank', 'noopener');
   };
   const copyPatientLink = async (apt) => {
-    await navigator.clipboard.writeText(callLink(apt.id));
+    if (!apt.callKey) return alert('The video link is still being prepared. Try again in a few seconds.');
+    await navigator.clipboard.writeText(callLink(apt.id, apt.callKey));
     setCopied(apt.id);
   };
   const complete = (apt) => setAppointments(prev => prev.map(a => a.id === apt.id ? { ...a, status: 'Completed' } : a));

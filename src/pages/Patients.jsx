@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Search, Plus, Lock, Eye, History, X, Paperclip } from 'lucide-react';
-import { auth, firebaseEnabled, watchRecords, addRecord } from '../firebase';
+import { auth, db, firebaseEnabled, watchRecords, addRecord, searchPatients } from '../firebase';
+import { collection, query, where, limit, onSnapshot } from 'firebase/firestore';
 
 export default function Patients({ 
   patients, 
@@ -56,15 +57,33 @@ export default function Patients({
     }));
   };
 
-  const filteredPatients = patients.filter(pat => 
-    pat.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-    pat.phone.includes(searchTerm) || 
+  // Only ~300 patients are loaded live; searching also asks the server so all 25,000+ are reachable.
+  const [serverHits, setServerHits] = useState([]);
+  useEffect(() => {
+    if (!firebaseEnabled || searchTerm.trim().length < 2) { setServerHits([]); return undefined; }
+    const t = setTimeout(() => searchPatients(searchTerm).then(setServerHits, () => setServerHits([])), 300);
+    return () => clearTimeout(t);
+  }, [searchTerm]);
+  const localHits = patients.filter(pat =>
+    (pat.name ?? '').toLowerCase().includes(searchTerm.toLowerCase()) ||
+    (pat.phone ?? '').includes(searchTerm) ||
     pat.id.toLowerCase().includes(searchTerm.toLowerCase())
   );
+  const filteredPatients = [...localHits, ...serverHits.filter(h => !localHits.some(l => l.id === h.id))];
+
+  // Full visit history of the selected patient from the server (the live list only covers recent days).
+  const [history, setHistory] = useState(null);
+  useEffect(() => {
+    setHistory(null);
+    if (!firebaseEnabled || !selectedPatient) return undefined;
+    return onSnapshot(query(collection(db, 'appointments'), where('patientId', '==', selectedPatient.id), limit(200)),
+      (snap) => setHistory(snap.docs.map(d => ({ ...d.data(), id: d.id })).sort((a, b) => b.date.localeCompare(a.date))),
+      (err) => console.error('patient history', err));
+  }, [selectedPatient?.id]);
 
   // Helper stats for selected patient
-  const patientAppointments = selectedPatient 
-    ? appointments.filter(apt => apt.patient.toLowerCase() === selectedPatient.name.toLowerCase())
+  const patientAppointments = selectedPatient
+    ? history ?? appointments.filter(apt => apt.patient.toLowerCase() === selectedPatient.name.toLowerCase())
     : [];
 
   const patientPayments = selectedPatient

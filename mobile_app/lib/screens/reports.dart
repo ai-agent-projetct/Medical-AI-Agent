@@ -79,7 +79,7 @@ class _ReportsTabState extends State<ReportsTab> {
               physics: const NeverScrollableScrollPhysics(),
               mainAxisSpacing: 10,
               crossAxisSpacing: 10,
-              childAspectRatio: 1.45,
+              childAspectRatio: 1.3,
               children: [
                 StatCard(icon: Icons.event_note, value: '${list.length}', label: 'Appointments', badge: 'Total', badgeColor: kMuted),
                 StatCard(icon: Icons.check_circle_outline, value: '${done.length}', label: 'Completed', badge: 'Done'),

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { Search, Plus, Calendar, Check, X, Clock, Video, User } from 'lucide-react';
-import { freeSlots } from '../firebase';
+import { Search, Plus, Calendar, Check, X, Clock, Video, User, MessageCircle } from 'lucide-react';
+import { firebaseEnabled, freeSlots, searchPatients, whatsappConfirmation } from '../firebase';
 
 const today = new Date().toLocaleDateString('en-CA'); // local YYYY-MM-DD
 
@@ -20,6 +20,7 @@ export default function Appointments({
   const [selectedApt, setSelectedApt] = useState(null);
   
   // States for new booking
+  const [found, setFound] = useState([]); // server search results for the booking form
   const [newApt, setNewApt] = useState({
     patient: '', doctor: '', department: '', date: today, time: '10:00 AM', status: 'Confirmed', type: 'Offline', visitType: 'General', fee: 500
   });
@@ -55,6 +56,8 @@ export default function Appointments({
   const handleOpenAddModal = () => {
     setNewApt({
       patient: patients[0]?.name || '',
+      patientId: patients[0]?.id,
+      patientPhone: patients[0]?.phone,
       doctor: doctors[0]?.name || '',
       department: departments[0]?.name || '',
       date: today,
@@ -220,6 +223,13 @@ export default function Appointments({
                       <div style={{ display: 'flex', gap: '6px' }}>
                         {(apt.status === 'Confirmed' || apt.status === 'Rescheduled') && (
                           <>
+                            {apt.token && whatsappConfirmation(apt) && (
+                              <a className="btn btn-secondary" style={{ padding: '4px 8px', fontSize: '0.78rem', color: '#16a34a' }}
+                                href={whatsappConfirmation(apt)} target="_blank" rel="noreferrer"
+                                title={`Send token #${apt.token} confirmation to ${apt.patientPhone} on WhatsApp`}>
+                                <MessageCircle size={14} /> WhatsApp
+                              </a>
+                            )}
                             <button className="btn btn-success" style={{ padding: '4px 8px', fontSize: '0.78rem' }} onClick={() => updateAptStatus(apt.id, 'Checked In')}>
                               Check In
                             </button>
@@ -270,13 +280,20 @@ export default function Appointments({
             <div className="modal-body">
               <div className="form-group">
                 <label>Select Patient</label>
+                {firebaseEnabled && (
+                  <input className="form-input" style={{ marginBottom: 6 }} placeholder="Search all patients by name or phone…"
+                    onChange={(e) => searchPatients(e.target.value).then(setFound, () => setFound([]))} />
+                )}
                 <select 
                   className="form-input"
-                  value={newApt.patient}
-                  onChange={(e) => setNewApt(prev => ({ ...prev, patient: e.target.value }))}
+                  value={newApt.patientId ?? newApt.patient}
+                  onChange={(e) => {
+                    const p = [...found, ...patients].find(x => x.id === e.target.value || x.name === e.target.value);
+                    setNewApt(prev => ({ ...prev, patient: p?.name ?? e.target.value, patientId: p?.id, patientPhone: p?.phone }));
+                  }}
                 >
-                  {patients.map((pat, idx) => (
-                    <option key={idx} value={pat.name}>{pat.name} (Phone: {pat.phone})</option>
+                  {[...found, ...patients.filter(p => !found.some(f => f.id === p.id))].map((pat) => (
+                    <option key={pat.id} value={pat.id}>{pat.name} (Phone: {pat.phone})</option>
                   ))}
                 </select>
               </div>

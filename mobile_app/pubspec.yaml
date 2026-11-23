@@ -45,10 +45,18 @@ dependencies:
   printing: ^5.15.0
   url_launcher: ^6.3.2
   intl: ^0.20.3
+  cloud_functions: ^6.5.1
+  flutter_local_notifications: ^23.0.4
+  timezone: ^0.11.2
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
+  integration_test:
+    sdk: flutter
+  flutter_driver:
+    sdk: flutter
+  http: any
 
   # The "flutter_lints" package below contains a set of recommended lints to
   # encourage good coding practices. The lint set provided by the package is

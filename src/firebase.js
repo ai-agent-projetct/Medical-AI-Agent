@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { initializeApp } from 'firebase/app';
-import { getAuth } from 'firebase/auth';
+import { getAuth, connectAuthEmulator } from 'firebase/auth';
 import {
   getFirestore, collection, doc, onSnapshot, setDoc, getDoc, query,
-  runTransaction, serverTimestamp, addDoc, orderBy,
+  runTransaction, serverTimestamp, addDoc, orderBy, limit, arrayUnion, writeBatch, where, getDocs, connectFirestoreEmulator,
 } from 'firebase/firestore';
-import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { getStorage, ref, uploadBytes, getDownloadURL, connectStorageEmulator } from 'firebase/storage';
+import { getFunctions, connectFunctionsEmulator } from 'firebase/functions';
 import { DEFAULT_SESSIONS, generateSlots } from './slots';
 
 const env = import.meta.env;
@@ -25,6 +26,15 @@ const app = firebaseEnabled ? initializeApp({
 export const auth = app && getAuth(app);
 export const db = app && getFirestore(app);
 export const storage = app && getStorage(app);
+export const functions = app && getFunctions(app, 'asia-south1');
+
+// `npm run dev:emulator` → talk to the local Firebase Emulator Suite instead of a real project.
+if (app && env.VITE_USE_EMULATORS === 'true') {
+  connectAuthEmulator(auth, 'http://127.0.0.1:9099', { disableWarnings: true });
+  connectFirestoreEmulator(db, '127.0.0.1', 8181);
+  connectStorageEmulator(storage, '127.0.0.1', 9199);
+  connectFunctionsEmulator(functions, '127.0.0.1', 5001);
+}
 
 // Firestore role → portal role label used by the RBAC matrix in App.jsx.
 export const ROLE_LABELS = {
@@ -33,6 +43,7 @@ export const ROLE_LABELS = {
   doctor: 'Doctor',
   receptionist: 'Receptionist',
   billing: 'Billing Staff',
+  pharmacist: 'Pharmacist',
 };
 
 const fail = (err) => {
@@ -47,7 +58,7 @@ const fail = (err) => {
  * ponytail: diffs the whole array on each write; switch pages to explicit add/update calls if a
  * collection grows past a few thousand docs.
  */
-export function useLiveCollection(name, fallback, prepare = (item) => item) {
+export function useLiveCollection(name, fallback, prepare = (item) => item, constraints = []) {
   const [items, setItems] = useState(db ? [] : fallback);
   const itemsRef = useRef(items);
   itemsRef.current = items;
@@ -56,9 +67,12 @@ export function useLiveCollection(name, fallback, prepare = (item) => item) {
 
   useEffect(() => {
     if (!db) return undefined;
-    return onSnapshot(collection(db, name),
+    // `constraints` bound what each browser downloads (date window / limit); items outside it are
+    // untouched by writes, which only send changed or new items.
+    return onSnapshot(constraints.length ? query(collection(db, name), ...constraints) : collection(db, name),
       (snap) => setItems(snap.docs.map((d) => ({ ...d.data(), id: d.id }))),
       (err) => console.error(`${name} listener`, err));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [name]);
 
   const write = useCallback((updater) => {
@@ -67,33 +81,76 @@ export function useLiveCollection(name, fallback, prepare = (item) => item) {
     const next = typeof updater === 'function' ? updater(prev) : updater;
     const prevById = new Map(prev.map((i) => [i.id, i]));
     const seen = new Set();
-    for (let item of next) {
-      // Pages mint random ids (PAT-123); never let a collision overwrite another record.
-      if (seen.has(item.id)) item = { ...item, id: doc(collection(db, name)).id };
-      seen.add(item.id);
+    // Pages mint random ids (PAT-123) or none at all; never let a collision overwrite another record.
+    const fixed = next.map((item) => {
+      const out = !item.id || seen.has(item.id) ? { ...item, id: doc(collection(db, name)).id } : item;
+      seen.add(out.id);
+      return out;
+    });
+    for (const item of fixed) {
       const old = prevById.get(item.id);
       if (old && JSON.stringify(old) === JSON.stringify(item)) continue;
       Promise.resolve(prepareRef.current(item, !old))
         .then(({ id, ...data }) => setDoc(doc(db, name, id), data, { merge: true }))
         .catch(fail);
     }
-    setItems(next); // optimistic; the snapshot listener confirms
+    setItems(fixed); // optimistic; the snapshot listener confirms
     return undefined;
   }, [name]);
 
   return [items, write, fallback];
 }
 
-/** Next hospital-wide token number (#58, #59 …), shared with the mobile app. */
-export async function nextToken() {
-  if (!db) return Math.floor(100 + Math.random() * 900);
+/** Records a taken slot in bookedSlots/{doctorId}_{date}, which the patient app reads to offer free slots. */
+export function markBooked(doctorId, date, time) {
+  if (!db || !doctorId || !date || !time) return;
+  setDoc(doc(db, 'bookedSlots', `${doctorId}_${date}`), { times: arrayUnion(time) }, { merge: true }).catch(fail);
+}
+
+/** Writes the patient-app catalogs (medicines, labTests, articles) from src/catalog.json. */
+export async function seedCatalog(catalog) {
+  if (!db) return;
+  const batch = writeBatch(db);
+  for (const [name, items] of Object.entries(catalog)) {
+    for (const { id, ...data } of items) batch.set(doc(db, name, id), data);
+  }
+  await batch.commit();
+}
+
+/**
+ * Books doctor/date/time atomically and returns that doctor's next OPD token for the day (#1, #2 …).
+ * Throws if the slot is already taken, so two desks (or the apps) can't double-book it.
+ * Same counters/bookedSlots docs as the mobile app (Db.book / PDb.book).
+ */
+export async function reserveSlot(doctorId, date, time) {
+  if (!db) return Math.floor(1 + Math.random() * 40);
+  const key = `${doctorId ?? 'unassigned'}_${date}`;
   return runTransaction(db, async (tx) => {
-    const counter = doc(db, 'counters', 'appointments');
-    const snap = await tx.get(counter);
-    const next = (snap.exists() ? snap.data().next : 1) || 1;
-    tx.set(counter, { next: next + 1 }, { merge: true });
-    return next;
+    const slotRef = doc(db, 'bookedSlots', key);
+    const counterRef = doc(db, 'counters', key);
+    const slot = await tx.get(slotRef);
+    const counter = await tx.get(counterRef);
+    if ((slot.data()?.times ?? []).includes(time)) throw new Error(`${time} on ${date} is already booked for this doctor`);
+    const token = counter.data()?.next ?? 1;
+    tx.set(counterRef, { next: token + 1 }, { merge: true });
+    tx.set(slotRef, { times: arrayUnion(time) }, { merge: true });
+    return token;
   });
+}
+
+/** WhatsApp click-to-chat link with the booking confirmation (staff tap Send in WhatsApp). */
+export function whatsappConfirmation(apt, hospital = 'ABC Hospital') {
+  const digits = (apt.patientPhone ?? '').replace(/\D/g, '');
+  if (digits.length < 10) return null;
+  const phone = digits.length === 10 ? `91${digits}` : digits;
+  const lines = [
+    `Hello ${apt.patient}, your appointment at ${hospital} is confirmed.`,
+    `Doctor: ${apt.doctor}`,
+    `Date: ${apt.date}, ${apt.time}`,
+    `Token: #${apt.token}`,
+    apt.type === 'Online' ? (apt.callKey ? `Video consultation link: ${callLink(apt.id, apt.callKey)}` : 'Your video link will follow shortly.') : 'Please arrive 10 minutes early and show this token at the front desk.',
+  ];
+  return `https://wa.me/${phone}?text=${encodeURIComponent(lines.join('\n'))}`;
 }
 
 // ---- Slots ----
@@ -126,9 +183,58 @@ export async function freeSlots(doctor, date, appointments) {
   return slots.filter((s) => minutes(s) > now.getHours() * 60 + now.getMinutes());
 }
 
+// ---- Bounded live windows for the large collections (1,000 staff × 25,000+ patients) ----
+const daysAgo = (n) => new Date(Date.now() - n * 86_400_000).toLocaleDateString('en-CA');
+// ponytail: windows are computed at page load; a portal left open for days keeps its old window until reload.
+export const WINDOWS = {
+  appointments: [where('date', '>=', daysAgo(7))],
+  payments: [where('date', '>=', daysAgo(90))],
+  patients: [orderBy('name'), limit(300)],
+  orders: [orderBy('createdAt', 'desc'), limit(300)],
+};
+
+/** Patients by name prefix or exact phone, straight from the server (not limited to the loaded window). */
+export async function searchPatients(term) {
+  const t = term.trim();
+  if (!db || t.length < 2) return [];
+  const cap = t.replace(/\b\w/g, (c) => c.toUpperCase()); // names are stored capitalised
+  const q = /^[+\d\s-]{6,}$/.test(t)
+    ? query(collection(db, 'patients'), where('phone', '==', t), limit(20))
+    : query(collection(db, 'patients'), orderBy('name'), where('name', '>=', cap), where('name', '<=', `${cap}`), limit(20));
+  return (await getDocs(q)).docs.map((d) => ({ ...d.data(), id: d.id }));
+}
+
+// ---- Audit trail (auditLogs: append-only, admins read) ----
+export function logAudit(user, action, module, details) {
+  if (!db || !auth.currentUser) return;
+  const { uid, email } = auth.currentUser;
+  addDoc(collection(db, 'auditLogs'), { at: serverTimestamp(), uid, email, user, action, module, details })
+    .catch((err) => console.error('audit log', err));
+}
+
+const stamp = (d) => d.toLocaleString('en-GB', {
+  day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true,
+}).replace(',', '');
+
+/** Latest 500 audit entries, newest first. Only admins may read; others get an empty list. */
+export function useAuditLogs(enabled) {
+  const [logs, setLogs] = useState([]);
+  useEffect(() => {
+    if (!db || !enabled) return undefined;
+    return onSnapshot(query(collection(db, 'auditLogs'), orderBy('at', 'desc'), limit(500)),
+      (snap) => setLogs(snap.docs.map((d) => {
+        const x = d.data();
+        return { ...x, id: d.id, user: `${x.user} (${x.email})`, timestamp: x.at ? stamp(x.at.toDate()) : 'just now' };
+      })),
+      (err) => console.error('auditLogs listener', err));
+  }, [enabled]);
+  return logs;
+}
+
 // ---- Medical records (patients/{id}/records) ----
 export function watchRecords(patientId, cb) {
   if (!db) return () => {};
+  logAudit(ROLE_LABELS[cachedRole] ?? 'Staff', 'Viewed Medical Records', 'Patient Records', `Opened records of patient ${patientId}`);
   return onSnapshot(
     query(collection(db, 'patients', patientId, 'records'), orderBy('createdAt', 'desc')),
     (snap) => cb(snap.docs.map((d) => ({ ...d.data(), id: d.id }))),
@@ -149,11 +255,15 @@ export async function addRecord(patientId, record, file) {
   });
 }
 
+let cachedRole = null;
 export async function loadUserRole(uid) {
   const snap = await getDoc(doc(db, 'users', uid));
-  return snap.data()?.role ?? null;
+  cachedRole = snap.data()?.role ?? null;
+  return cachedRole;
 }
 
 // ---- Video calls (ZegoCloud room id = appointment id) ----
 export const portalUrl = env.VITE_PUBLIC_URL || window.location.origin;
-export const callLink = (appointmentId) => `${portalUrl}/#/call/${appointmentId}`;
+// The call key (set on online appointments by the onAppointmentWrite function) lets a patient without an
+// account get a token for this one room.
+export const callLink = (appointmentId, callKey = '') => `${portalUrl}/#/call/${appointmentId}?k=${callKey ?? ''}`;

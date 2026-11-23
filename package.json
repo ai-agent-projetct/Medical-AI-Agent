@@ -6,24 +6,31 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "emulators": "firebase emulators:start --project demo-medical-ai",
+    "dev:emulator": "vite --mode emulator",
+    "test": "node --test src/slots.test.mjs src/billing.test.mjs src/csv.test.mjs",
+    "test:rules": "firebase emulators:exec --only firestore,storage --project demo-medical-ai \"node --test tests/rules.test.mjs\"",
+    "demo": "firebase emulators:exec --project demo-medical-ai --ui \"node scripts/seed-demo.mjs && vite --mode emulator --port 3000\"",
+    "demo:seed": "node scripts/seed-demo.mjs",
+    "demo:app": "python -m http.server 3100 -d mobile_app/build/web",
+    "test:functions": "npm --prefix functions test",
+    "test:load": "node scripts/load-test.mjs"
   },
   "dependencies": {
-    "@react-three/drei": "^9.112.0",
-    "@react-three/fiber": "^8.17.0",
-    "@studio-freight/lenis": "^1.0.42",
     "@zegocloud/zego-uikit-prebuilt": "^2.18.4",
     "firebase": "^12.19.0",
-    "framer-motion": "^11.18.0",
-    "gsap": "^3.12.5",
     "lucide-react": "^1.30.0",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "react-router-dom": "^6.28.0",
-    "three": "^0.170.0"
+    "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@firebase/rules-unit-testing": "^5.0.2",
     "@vitejs/plugin-react": "^4.3.4",
+    "firebase-tools": "^15.36.0",
     "vite": "^5.4.11"
+  },
+  "overrides": {
+    "@grpc/grpc-js": "^1.13.6"
   }
 }

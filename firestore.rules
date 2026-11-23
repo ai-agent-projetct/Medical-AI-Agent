@@ -1,8 +1,9 @@
 rules_version = '2';
 
 // Shared by the web portal and the Flutter app.
-// Roles live in users/{uid}.role: admin | hospital_admin | doctor | receptionist | billing.
-// Doctors self-register from the mobile app (role "doctor" only); every other role is set by an admin.
+// Roles live in users/{uid}.role: admin | hospital_admin | doctor | receptionist | billing | pharmacist | patient.
+// Doctors and patients self-register from the mobile app; every other role is set by an admin.
+// Patients own patients/{id} docs (themselves + family) via ownerUid, and appointments/orders via ownerUid.
 service cloud.firestore {
   match /databases/{database}/documents {
     function signedIn() { return request.auth != null; }
@@ -13,50 +14,207 @@ service cloud.firestore {
     }
     function isAdmin() { return signedIn() && role() in ['admin', 'hospital_admin']; }
     function isClinical() { return signedIn() && role() in ['admin', 'hospital_admin', 'doctor', 'receptionist']; }
-    function isStaff() { return signedIn() && role() in ['admin', 'hospital_admin', 'doctor', 'receptionist', 'billing']; }
+    function isStaff() { return signedIn() && role() in ['admin', 'hospital_admin', 'doctor', 'receptionist', 'billing', 'pharmacist']; }
+    function isPatient() { return signedIn() && role() == 'patient'; }
+    function ownsPatient(pid) {
+      return get(/databases/$(database)/documents/patients/$(pid)).data.ownerUid == me();
+    }
+    function ownsAppointment(id) {
+      return get(/databases/$(database)/documents/appointments/$(id)).data.ownerUid == me();
+    }
+    function onlyChanges(keys) { return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys); }
 
     match /users/{uid} {
       allow read: if signedIn() && (me() == uid || isAdmin());
-      allow create: if signedIn() && me() == uid && request.resource.data.role == 'doctor';
+      allow create: if signedIn() && me() == uid && request.resource.data.role in ['doctor', 'patient'];
       // Nobody can change their own role; admins can change anyone's.
       allow update: if isAdmin() || (signedIn() && me() == uid && request.resource.data.role == resource.data.role);
       allow delete: if isAdmin() || (signedIn() && me() == uid);
     }
 
+    // Public doctor directory for every signed-in user (patients search and book from it).
     match /doctors/{doctorId} {
-      allow read: if isStaff();
+      allow read: if signedIn();
       allow write: if isAdmin() || (signedIn() && me() == doctorId);
+
+      // One verified review per completed appointment, written by the patient who attended.
+      match /reviews/{appointmentId} {
+        allow read: if signedIn();
+        allow create: if isPatient() && request.resource.data.uid == me()
+          && request.resource.data.rating is int && request.resource.data.rating >= 1 && request.resource.data.rating <= 5
+          && get(/databases/$(database)/documents/appointments/$(appointmentId)).data.ownerUid == me()
+          && get(/databases/$(database)/documents/appointments/$(appointmentId)).data.doctorId == doctorId
+          && get(/databases/$(database)/documents/appointments/$(appointmentId)).data.status == 'Completed';
+      }
     }
 
     match /patients/{patientId} {
-      allow read: if isStaff();
-      allow write: if isClinical();
+      allow read: if isStaff() || isBilling() || (signedIn() && resource.data.ownerUid == me());
+      // getAfter: sign-up creates users/{uid} (role patient) and the own profile in one batch.
+      allow create: if isClinical() || (isPatient() && request.resource.data.ownerUid == me())
+        || (signedIn() && patientId == me() && request.resource.data.ownerUid == me()
+            && getAfter(/databases/$(database)/documents/users/$(me())).data.role == 'patient');
+      allow update: if isClinical()
+        || (isPatient() && resource.data.ownerUid == me() && request.resource.data.ownerUid == me());
 
-      // Medical records: billing staff have no clinical access.
+      // Medical records: billing staff have no clinical access. Patients read their own and upload reports.
       match /records/{recordId} {
-        allow read, create: if isClinical();
-        allow update, delete: if isAdmin() || (isClinical() && resource.data.doctorId == me());
+        allow read: if isClinical() || (isPatient() && ownsPatient(patientId));
+        allow create: if isClinical()
+          || (isPatient() && ownsPatient(patientId) && request.resource.data.uploadedBy == me());
+        allow update, delete: if isAdmin() || (isClinical() && resource.data.doctorId == me())
+          || (isPatient() && ownsPatient(patientId) && resource.data.uploadedBy == me());
       }
     }
 
     match /appointments/{appointmentId} {
-      allow read: if isStaff();
-      allow create, update: if isClinical();
+      allow read: if isStaff() || (signedIn() && resource.data.ownerUid == me());
+      // Patients book through the bookAppointment Cloud Function (server transaction), not directly.
+      allow create: if isClinical();
+      // Patients may only cancel their own booking.
+      allow update: if isClinical()
+        || (isPatient() && resource.data.ownerUid == me() && onlyChanges(['status']) && request.resource.data.status == 'Cancelled');
       allow delete: if isAdmin();
+
+      // Consultation chat between the patient and the clinic.
+      match /messages/{messageId} {
+        allow read: if isClinical() || (isPatient() && ownsAppointment(appointmentId));
+        allow create: if request.resource.data.uid == me()
+          && (isClinical() || (isPatient() && ownsAppointment(appointmentId)));
+      }
+    }
+
+    // bookedSlots/{doctorId}_{date} {times: ["09:00 AM", …]}: lets patients see free slots without
+    // reading other patients' appointments. Written by staff apps and the booking functions.
+    match /bookedSlots/{id} {
+      allow read: if signedIn();
+      allow write: if isClinical();
     }
 
     match /schedules/{doctorId} {
-      allow read: if isStaff();
+      allow read: if signedIn();
       allow write: if isAdmin() || (signedIn() && me() == doctorId);
     }
 
     match /notifications/{id} {
       allow read, update, delete: if signedIn() && resource.data.userId == me();
-      allow create: if isStaff();
+      allow create: if isStaff() || (signedIn() && request.resource.data.userId == me());
     }
 
+    match /departments/{id} {
+      allow read: if isStaff();
+      allow write: if isAdmin();
+    }
+
+    match /staff/{id} {
+      allow read: if isStaff();
+      allow write: if isAdmin();
+    }
+
+    // Reception creates a payment with each booking; billing marks it paid or refunded.
+    match /payments/{id} {
+      allow read, create, update: if isStaff();
+      allow delete: if isAdmin();
+    }
+
+    // Patient-facing catalogs (pharmacy, lab tests, health articles); admins maintain them.
+    match /medicines/{id} { allow read: if signedIn(); allow write: if isAdmin(); }
+    match /labTests/{id} { allow read: if signedIn(); allow write: if isAdmin(); }
+    match /articles/{id} { allow read: if signedIn(); allow write: if isAdmin(); }
+
+    // Medicine and lab-test orders: patients place and may cancel while still "Placed"; staff fulfil.
+    match /orders/{id} {
+      allow read: if isStaff() || (signedIn() && resource.data.ownerUid == me());
+      allow create: if isPatient() && request.resource.data.ownerUid == me() && request.resource.data.status == 'Placed';
+      allow update: if isStaff()
+        || (isPatient() && resource.data.ownerUid == me() && resource.data.status == 'Placed'
+            && onlyChanges(['status']) && request.resource.data.status == 'Cancelled');
+    }
+
+    // ---- Hospital billing, pharmacy and IPD (portal) ----
+    function isBilling() { return signedIn() && role() in ['admin', 'hospital_admin', 'receptionist', 'billing', 'pharmacist']; }
+    function isPharmacy() { return signedIn() && role() in ['admin', 'hospital_admin', 'pharmacist']; }
+
+    match /services/{id} { allow read: if isStaff(); allow write: if isAdmin(); }
+
+    // Invoices are never deleted (GST series must stay gap-free); only admins cancel.
+    match /invoices/{id} {
+      allow read: if isStaff();
+      allow create: if isBilling() && request.resource.data.status in ['Unpaid', 'Partial', 'Paid'];
+      allow update: if (isBilling() && resource.data.status != 'Cancelled' && request.resource.data.status != 'Cancelled'
+          && onlyChanges(['paid', 'due', 'status']))
+        || isAdmin();
+    }
+
+    // Money received/refunded: append-only, written as yourself; refunds (negative) by admins only.
+    match /receipts/{id} {
+      allow read: if isStaff();
+      allow create: if isBilling() && request.resource.data.uid == me() && request.resource.data.at == request.time
+        && (request.resource.data.amount > 0 || isAdmin());
+    }
+
+    match /drugs/{id} {
+      allow read: if isStaff();
+      allow create, update: if isPharmacy() || (isBilling() && onlyChanges(['stock']));
+    }
+    match /stockBatches/{id} {
+      allow read: if isStaff();
+      allow create: if isPharmacy();
+      allow update: if isPharmacy() || (isBilling() && onlyChanges(['qty']));
+    }
+    match /suppliers/{id} { allow read: if isStaff(); allow write: if isPharmacy(); }
+    match /purchases/{id} { allow read: if isStaff(); allow create: if isPharmacy(); }
+
+    // Insurance / TPA claims: billing desks create and move them through stages; nobody deletes them.
+    match /claims/{id} {
+      allow read: if isStaff();
+      allow create, update: if isBilling();
+    }
+
+    match /wards/{id} { allow read: if isStaff(); allow write: if isAdmin(); }
+    match /beds/{id} {
+      allow read: if isStaff();
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin() || isClinical() || isBilling();
+    }
+    match /admissions/{id} {
+      allow read: if isStaff();
+      allow create: if isClinical() || isBilling();
+      allow update: if isClinical() || isBilling();
+      match /charges/{cid} {
+        allow read: if isStaff();
+        allow create: if isClinical() || isBilling();
+      }
+    }
+
+    // Voice-agent calls (transcript, booking): written only by Cloud Functions; staff watch them live.
+    match /voiceCalls/{id} {
+      allow read: if isStaff();
+    }
+
+    // Medicine reminders belong to the patient who set them.
+    match /reminders/{id} {
+      allow create: if signedIn() && request.resource.data.ownerUid == me();
+      allow read, update, delete: if signedIn() && resource.data.ownerUid == me();
+    }
+
+    // DPDP right to erasure: users file a request for their own account; admins review and close it.
+    match /deletionRequests/{uid} {
+      allow create: if signedIn() && me() == uid && request.resource.data.uid == me() && request.resource.data.status == 'Pending';
+      allow read: if isAdmin() || (signedIn() && me() == uid);
+      allow update: if isAdmin();
+    }
+
+    // Append-only audit trail: staff write entries as themselves; admins read; nobody edits or deletes.
+    match /auditLogs/{id} {
+      allow create: if isStaff() && request.resource.data.uid == me() && request.resource.data.at == request.time;
+      allow read: if isAdmin();
+    }
+
+    // Per-doctor daily token counters (counters/{doctorId}_{date}); patients go through bookAppointment.
     match /counters/{id} {
-      allow read, write: if isClinical();
+      allow read: if signedIn();
+      allow create, update: if isClinical() || isBilling();
     }
   }
 }

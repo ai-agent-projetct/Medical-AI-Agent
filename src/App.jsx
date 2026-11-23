@@ -7,7 +7,7 @@ import {
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { serverTimestamp } from 'firebase/firestore';
 import {
-  auth, firebaseEnabled, useLiveCollection, nextToken, loadUserRole, ROLE_LABELS,
+  auth, firebaseEnabled, useLiveCollection, reserveSlot, loadUserRole, ROLE_LABELS, logAudit, useAuditLogs, markBooked, seedCatalog, WINDOWS,
 } from './firebase';
 import Login from './pages/Login';
 const CallRoom = lazy(() => import('./pages/CallRoom')); // Zego SDK is ~5 MB; only load it for calls
@@ -28,6 +28,15 @@ import Notifications from './pages/Notifications';
 import HospitalSettings from './pages/HospitalSettings';
 import SystemHealth from './pages/SystemHealth';
 import AuditLogs from './pages/AuditLogs';
+import Orders from './pages/Orders';
+import Billing from './pages/hms/Billing';
+import ChargeMaster from './pages/hms/ChargeMaster';
+import Pharmacy from './pages/hms/Pharmacy';
+import Ipd from './pages/hms/Ipd';
+import HmsReports from './pages/hms/HmsReports';
+import Claims from './pages/hms/Claims';
+import VoiceAgent from './pages/VoiceAgent';
+import catalog from './catalog.json';
 
 // Specification & Feature Pages
 import PrescriptionTemplates from './pages/PrescriptionTemplates';
@@ -57,8 +66,8 @@ export default function App() {
   }, []);
 
   if (callMatch) {
-    const name = new URLSearchParams(window.location.hash.split('?')[1]).get('name') ?? '';
-    return <Suspense fallback={null}><CallRoom roomId={callMatch[1]} presetName={name} /></Suspense>;
+    const params = new URLSearchParams(window.location.hash.split('?')[1]);
+    return <Suspense fallback={null}><CallRoom roomId={callMatch[1]} callKey={params.get('k') ?? ''} presetName={params.get('name') ?? ''} /></Suspense>;
   }
   if (session === undefined) return null;
   if (session === null) return <Login />;
@@ -78,7 +87,7 @@ export default function App() {
 
 function Portal({ initialRole, canSwitchRole }) {
   const [currentRole, setCurrentRole] = useState(initialRole);
-  const [activeTab, setActiveTab] = useState('dashboard');
+  const [activeTab, setActiveTab] = useState(initialRole === 'Pharmacist' ? 'hms-pos' : 'dashboard');
   const [showNotificationsDrawer, setShowNotificationsDrawer] = useState(false);
 
   // 1. Initial State for Doctors
@@ -97,10 +106,10 @@ function Portal({ initialRole, canSwitchRole }) {
     { id: 'PAT-103', name: 'Karthik B.', phone: '+91 90876 54321', email: 'karthik@gmail.com', dob: '1980-11-05', gender: 'Male', emergencyContactName: 'Balan (Father)', emergencyContactPhone: '+91 90876 54320', status: 'Active' },
     { id: 'PAT-104', name: 'Meena Iyer', phone: '+91 93456 22111', email: 'meena@gmail.com', dob: '1995-02-17', gender: 'Female', emergencyContactName: 'Gopal Iyer (Husband)', emergencyContactPhone: '+91 93456 22110', status: 'Active' },
     { id: 'PAT-105', name: 'Sanjay R.', phone: '+91 97012 33445', email: 'sanjay@gmail.com', dob: '1975-06-30', gender: 'Male', emergencyContactName: 'Raji (Wife)', emergencyContactPhone: '+91 97012 33440', status: 'Active' }
-  ]);
+  ], undefined, WINDOWS.patients);
 
   // 3. Initial State for Departments
-  const [departments, setDepartments] = useState([
+  const [departments, setDepartments, sampleDepartments] = useLiveCollection('departments', [
     { name: 'Cardiology', description: 'Advanced diagnostic cardiac lab, coronary surgery care and structural heart solutions.', head: 'Dr. Arun Kumar', workingHours: '09:00 AM - 05:00 PM', defaultFee: 800, status: 'Active' },
     { name: 'Orthopedics', description: 'Joint reconstructions, spine correction, fracture trauma management and athletic physical therapy.', head: 'Dr. Rajesh Kumar', workingHours: '09:00 AM - 05:00 PM', defaultFee: 1000, status: 'Active' },
     { name: 'Dermatology', description: 'Comprehensive clinical care for skin diseases, allergies, psoriasis, eczema, and skin cancer checks.', head: 'Dr. Sarah Mathews', workingHours: '09:00 AM - 05:00 PM', defaultFee: 700, status: 'Active' }
@@ -114,41 +123,57 @@ function Portal({ initialRole, canSwitchRole }) {
     { id: 'APT-25874', patient: 'Meena Iyer', doctor: 'Dr. Sarah Mathews', department: 'Dermatology', date: '2026-08-09', time: '01:00 PM', status: 'Completed', type: 'Online', fee: 700 },
     { id: 'APT-25875', patient: 'Sanjay R.', doctor: 'Dr. Arun Kumar', department: 'Cardiology', date: '2026-08-09', time: '02:00 PM', status: 'Confirmed', type: 'Offline', fee: 800 },
     { id: 'APT-25876', patient: 'Ravi Kumar', doctor: 'Dr. Arun Kumar', department: 'Cardiology', date: '2026-08-10', time: '12:15 PM', status: 'Confirmed', type: 'Offline', fee: 800 }
-  ], linkAppointment);
+  ], linkAppointment, WINDOWS.appointments);
 
   // Every appointment write (scheduler, dashboard quick-book, AI console) routes through here, so the
   // mobile app can find it: it queries by doctorId and shows the token number.
   async function linkAppointment(apt, isNew) {
     const doctor = doctors.find(d => d.name === apt.doctor);
     const patient = patients.find(p => p.name === apt.patient);
+    const doctorId = apt.doctorId ?? doctor?.id ?? null;
+    // New bookings reserve the slot + per-doctor daily token in one transaction (throws if the slot is taken).
+    // ponytail: reschedules only mark the new slot taken; a clash there isn't rejected.
+    const token = isNew ? apt.token ?? await reserveSlot(doctorId, apt.date, apt.time) : apt.token;
+    if (!isNew && !['Cancelled', 'No-Show'].includes(apt.status)) markBooked(doctorId, apt.date, apt.time);
     return {
       ...apt,
-      doctorId: apt.doctorId ?? doctor?.id ?? null,
+      doctorId,
       patientId: apt.patientId ?? patient?.id ?? null,
       patientPhone: apt.patientPhone ?? patient?.phone ?? '',
       visitType: apt.visitType ?? 'General',
-      ...(isNew ? { token: apt.token ?? await nextToken(), createdAt: serverTimestamp() } : {}),
+      ...(isNew ? { token, createdAt: serverTimestamp() } : {}),
     };
   }
 
   const canSeed = firebaseEnabled && canSwitchRole && doctors.length === 0 && patients.length === 0;
-  const loadSampleData = () => {
+  const loadSampleData = async () => {
     setDoctors(sampleDoctors);
     setPatients(samplePatients);
-    setAppointments(sampleAppointments);
+    setDepartments(sampleDepartments);
+    await seedCatalog(catalog);
+    setStaff(sampleStaff);
+    setPayments(samplePayments);
+    // Link by the sample lists directly: the live doctor/patient lists are still empty at this point.
+    // Tokens come from linkAppointment (per doctor per day).
+    setAppointments(sampleAppointments.map(a => ({
+      ...a,
+      doctorId: sampleDoctors.find(d => d.name === a.doctor)?.id ?? null,
+      patientId: samplePatients.find(p => p.name === a.patient)?.id ?? null,
+      patientPhone: samplePatients.find(p => p.name === a.patient)?.phone ?? '',
+    })));
   };
 
   // 5. Initial State for Payments
-  const [payments, setPayments] = useState([
+  const [payments, setPayments, samplePayments] = useLiveCollection('payments', [
     { id: 'PAY-801', patient: 'Ravi Kumar', doctor: 'Dr. Rajesh Kumar', appointment: 'APT-25871', amount: 1000, method: 'UPI (GPay)', status: 'Paid', type: 'Offline', date: '2026-08-09' },
     { id: 'PAY-802', patient: 'Priya Sharma', doctor: 'Dr. Priya Sharma', appointment: 'APT-25872', amount: 600, method: 'Card (Visa)', status: 'Paid', type: 'Online', date: '2026-08-09' },
     { id: 'PAY-803', patient: 'Karthik B.', doctor: 'Dr. Rajesh Kumar', appointment: 'APT-25873', amount: 1000, method: 'Cash', status: 'Pending', type: 'Offline', date: '2026-08-09' },
     { id: 'PAY-804', patient: 'Meena Iyer', doctor: 'Dr. Sarah Mathews', appointment: 'APT-25874', amount: 700, method: 'Insurance (HDFC)', status: 'Paid', type: 'Online', date: '2026-08-08' },
     { id: 'PAY-805', patient: 'Sanjay R.', doctor: 'Dr. Arun Kumar', appointment: 'APT-25875', amount: 800, method: 'UPI (PhonePe)', status: 'Paid', type: 'Offline', date: '2026-08-08' }
-  ]);
+  ], undefined, WINDOWS.payments);
 
   // 6. Initial State for Staff Directory
-  const [staff, setStaff] = useState([
+  const [staff, setStaff, sampleStaff] = useLiveCollection('staff', [
     { empId: 'EMP-101', name: 'John Doe', role: 'Receptionist', email: 'john@abchospital.com', phone: '+91 99887 76655', department: 'Front Desk / OP', status: 'Active' },
     { empId: 'EMP-102', name: 'Sarah Connor', role: 'Billing Staff', email: 'sarah@abchospital.com', phone: '+91 99887 76644', department: 'Accounts', status: 'Active' },
     { empId: 'EMP-103', name: 'Dr. Arun Kumar', role: 'Doctor', email: 'arun@abchospital.com', phone: '+91 99887 76633', department: 'Cardiology', status: 'Active' },
@@ -156,7 +181,7 @@ function Portal({ initialRole, canSwitchRole }) {
   ]);
 
   // 7. Initial State for Audit Trail Logs
-  const [auditLogs, setAuditLogs] = useState([
+  const [demoAuditLogs, setDemoAuditLogs] = useState([
     { timestamp: '09 Aug 2026 12:30 PM', user: 'Super Admin', module: 'System Health', action: 'System Ping', details: 'Pinged all microservices nodes: Operational' },
     { timestamp: '09 Aug 2026 10:32 AM', user: 'Super Admin', module: 'Doctor Management', action: 'Added Doctor', details: 'Added Dr. Priya Sharma to Cardiology' },
     { timestamp: '09 Aug 2026 09:15 AM', user: 'Receptionist', module: 'Patient Management', action: 'Added Patient', details: 'Registered patient Ravi Kumar' },
@@ -164,28 +189,39 @@ function Portal({ initialRole, canSwitchRole }) {
     { timestamp: '08 Aug 2026 02:15 PM', user: 'Billing Staff', module: 'Payments', action: 'Payment Refunded', details: 'Refunded PAY-799 of ₹500 to Patient K.' }
   ]);
 
+  // Pharmacy and lab orders from the patient app
+  const [orders, setOrders] = useLiveCollection('orders', [], undefined, WINDOWS.orders);
+
   // 8. Dynamic Access Permission Matrix per Role
   const [rolePermissions, setRolePermissions] = useState({
-    'Super Admin': ['dashboard', 'futuristic', 'agentic', 'doctors', 'patients', 'departments', 'appointments', 'ivr', 'online', 'scribe', 'freed', 'printer', 'prescriptions', 'signature', 'profile', 'payouts', 'payments', 'revenue', 'staff', 'roles', 'notifications', 'settings', 'support', 'privacy', 'health', 'audit'],
-    'Hospital Admin': ['dashboard', 'futuristic', 'agentic', 'doctors', 'patients', 'departments', 'appointments', 'ivr', 'online', 'scribe', 'freed', 'printer', 'prescriptions', 'payouts', 'payments', 'revenue', 'notifications', 'settings', 'support', 'privacy', 'health', 'audit'],
-    'Doctor': ['dashboard', 'futuristic', 'agentic', 'doctors', 'patients', 'appointments', 'online', 'scribe', 'freed', 'printer', 'prescriptions', 'signature', 'profile', 'payouts', 'support', 'privacy', 'health'],
-    'Receptionist': ['dashboard', 'agentic', 'patients', 'appointments', 'ivr', 'online', 'notifications', 'support', 'health'],
-    'Billing Staff': ['dashboard', 'agentic', 'patients', 'appointments', 'payouts', 'payments', 'revenue', 'support', 'health']
+    'Super Admin': ['voice', 'hms-billing', 'hms-pos', 'hms-pharmacy', 'hms-ipd', 'hms-claims', 'hms-tariff', 'hms-reports', 'dashboard', 'futuristic', 'agentic', 'doctors', 'patients', 'departments', 'appointments', 'ivr', 'online', 'scribe', 'freed', 'printer', 'prescriptions', 'signature', 'profile', 'payouts', 'payments', 'orders', 'revenue', 'staff', 'roles', 'notifications', 'settings', 'support', 'privacy', 'health', 'audit'],
+    'Hospital Admin': ['voice', 'hms-billing', 'hms-pos', 'hms-pharmacy', 'hms-ipd', 'hms-claims', 'hms-tariff', 'hms-reports', 'dashboard', 'futuristic', 'agentic', 'doctors', 'patients', 'departments', 'appointments', 'ivr', 'online', 'scribe', 'freed', 'printer', 'prescriptions', 'payouts', 'payments', 'orders', 'revenue', 'notifications', 'settings', 'support', 'privacy', 'health', 'audit'],
+    'Doctor': ['hms-ipd', 'dashboard', 'futuristic', 'agentic', 'doctors', 'patients', 'appointments', 'online', 'scribe', 'freed', 'printer', 'prescriptions', 'signature', 'profile', 'payouts', 'support', 'privacy', 'health'],
+    'Receptionist': ['voice', 'hms-billing', 'hms-ipd', 'dashboard', 'agentic', 'patients', 'appointments', 'orders', 'ivr', 'online', 'notifications', 'support', 'health'],
+    'Pharmacist': ['hms-pos', 'hms-pharmacy', 'hms-tariff', 'support'],
+    'Billing Staff': ['hms-billing', 'hms-pos', 'hms-ipd', 'hms-claims', 'hms-tariff', 'hms-reports', 'dashboard', 'agentic', 'patients', 'appointments', 'payouts', 'payments', 'orders', 'revenue', 'support', 'health']
   });
 
+  const liveAuditLogs = useAuditLogs(['Super Admin', 'Hospital Admin'].includes(initialRole));
+  const auditLogs = firebaseEnabled ? liveAuditLogs : demoAuditLogs;
+
   const addAuditLog = (user, action, module, details) => {
+    if (firebaseEnabled) return logAudit(user, action, module, details);
     const timeStr = new Date().toLocaleString('en-GB', {
       day: '2-digit', month: 'short', year: 'numeric',
       hour: '2-digit', minute: '2-digit', hour12: true
     }).replace(',', '');
     
-    setAuditLogs(prev => [
+    setDemoAuditLogs(prev => [
       { timestamp: timeStr, user, module, action, details },
       ...prev
     ]);
   };
 
-  const addAppointment = (newApt) => {
+  // Only the scripted demos (Dashboard IVR simulation, AI voice console) call this. With a real backend they
+  // must not write fake bookings, payments or audit entries.
+  const demoAuditLog = firebaseEnabled ? () => {} : (...args) => addAuditLog(...args);
+  const addAppointment = firebaseEnabled ? () => {} : (newApt) => {
     setAppointments(prev => [newApt, ...prev]);
     const newPay = {
       id: `PAY-${Math.floor(800 + Math.random() * 200)}`,
@@ -202,6 +238,7 @@ function Portal({ initialRole, canSwitchRole }) {
   };
 
   const isTabAllowed = rolePermissions[currentRole]?.includes(activeTab);
+  const isHmsAdmin = ['Super Admin', 'Hospital Admin'].includes(currentRole);
 
   const navigationItems = [
     { key: 'dashboard', label: 'Dashboard', icon: <Activity size={18} />, section: 'main' },
@@ -220,8 +257,17 @@ function Portal({ initialRole, canSwitchRole }) {
     { key: 'profile', label: 'Profile Visibility', icon: <Eye size={18} />, section: 'clinical' },
     { key: 'ivr', label: 'IVR Center & Calls', icon: <Phone size={18} />, section: 'operations' },
     { key: 'notifications', label: 'Notifications Dispatch', icon: <Bell size={18} />, section: 'operations' },
+    { key: 'hms-billing', label: 'Billing Counter (OPD)', icon: <CreditCard size={18} />, section: 'hms' },
+    { key: 'hms-pos', label: 'Pharmacy POS', icon: <Pill size={18} />, section: 'hms' },
+    { key: 'hms-pharmacy', label: 'Pharmacy Inventory', icon: <Layers size={18} />, section: 'hms' },
+    { key: 'hms-ipd', label: 'In-Patient (IPD) & Beds', icon: <HeartPulse size={18} />, section: 'hms' },
+    { key: 'hms-claims', label: 'Insurance & TPA Claims', icon: <ShieldCheck size={18} />, section: 'hms' },
+    { key: 'hms-tariff', label: 'Charge Master (Tariff)', icon: <FileText size={18} />, section: 'hms' },
+    { key: 'hms-reports', label: 'Billing Reports', icon: <TrendingUp size={18} />, section: 'hms' },
     { key: 'payouts', label: 'Payout Batch Planner', icon: <Layers size={18} />, section: 'finance' },
     { key: 'payments', label: 'Payments Ledger', icon: <CreditCard size={18} />, section: 'finance' },
+    { key: 'voice', label: 'AI Voice Receptionist (Calls)', icon: <Phone size={18} />, section: 'operations' },
+    { key: 'orders', label: 'Pharmacy & Lab Orders', icon: <Pill size={18} />, section: 'operations' },
     { key: 'revenue', label: 'Revenue Dashboard', icon: <TrendingUp size={18} />, section: 'finance' },
     { key: 'staff', label: 'Staff Provisioning', icon: <UserPlus size={18} />, section: 'management' },
     { key: 'roles', label: 'RBAC Security Matrix', icon: <ShieldCheck size={18} />, section: 'management' },
@@ -293,6 +339,16 @@ function Portal({ initialRole, canSwitchRole }) {
                 className={`nav-link ${activeTab === item.key ? 'active' : ''}`}
                 onClick={() => setActiveTab(item.key)}
               >
+                {item.icon}
+                <span>{item.label}</span>
+              </a>
+            ))}
+
+          <div className="nav-section-title">Hospital Billing & Pharmacy</div>
+          {navigationItems
+            .filter(item => item.section === 'hms' && rolePermissions[currentRole]?.includes(item.key))
+            .map((item) => (
+              <a key={item.key} className={`nav-link ${activeTab === item.key ? 'active' : ''}`} onClick={() => setActiveTab(item.key)}>
                 {item.icon}
                 <span>{item.label}</span>
               </a>
@@ -452,7 +508,7 @@ function Portal({ initialRole, canSwitchRole }) {
                   patients={patients}
                   appointments={appointments}
                   addAppointment={addAppointment}
-                  addAuditLog={addAuditLog}
+                  addAuditLog={demoAuditLog}
                   currentRole={currentRole}
                 />
               )}
@@ -470,7 +526,7 @@ function Portal({ initialRole, canSwitchRole }) {
                   doctors={doctors}
                   appointments={appointments}
                   addAppointment={addAppointment}
-                  addAuditLog={addAuditLog}
+                  addAuditLog={demoAuditLog}
                   currentRole={currentRole}
                 />
               )}
@@ -581,6 +637,18 @@ function Portal({ initialRole, canSwitchRole }) {
                   addAuditLog={addAuditLog}
                   currentRole={currentRole}
                 />
+              )}
+              {activeTab === 'hms-billing' && <Billing isAdmin={isHmsAdmin} />}
+              {activeTab === 'hms-pos' && <Billing kind="PHARMACY" isAdmin={isHmsAdmin} />}
+              {activeTab === 'hms-pharmacy' && <Pharmacy canEdit={isHmsAdmin || currentRole === 'Pharmacist'} />}
+              {activeTab === 'hms-ipd' && <Ipd doctors={doctors} isAdmin={isHmsAdmin} canBill={currentRole !== 'Doctor'} />}
+              {activeTab === 'hms-tariff' && <ChargeMaster canEdit={isHmsAdmin} />}
+              {activeTab === 'hms-reports' && <HmsReports />}
+              {activeTab === 'hms-claims' && <Claims canEdit={currentRole !== 'Doctor' && currentRole !== 'Pharmacist'} />}
+              {activeTab === 'voice' && <VoiceAgent />}
+              {activeTab === 'orders' && (
+                <Orders orders={orders} setOrders={setOrders} addAuditLog={addAuditLog} currentRole={currentRole}
+                  onLoadCatalog={firebaseEnabled && canSwitchRole ? () => seedCatalog(catalog).then(() => alert('Catalog loaded: medicines, lab tests and articles.')) : null} />
               )}
               {activeTab === 'payments' && (
                 <Payments 

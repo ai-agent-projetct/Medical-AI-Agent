@@ -18,7 +18,7 @@ Future<void> startVideoConsultation(BuildContext context, Appt a) async {
   final ok = await guard(context, () async {
     if (a.status != 'In Consultation') await Db.setStatus(a.id, 'In Consultation');
     if (!context.mounted) return;
-    await openVideoRoom(context, roomId: a.id, userId: uid, userName: me['name'] as String? ?? 'Doctor');
+    await openVideoRoom(context, roomId: a.id, userId: uid, userName: me['name'] as String? ?? 'Doctor', callKey: a.data['callKey'] as String?);
   });
   // On web the room opens in a new tab; the doctor completes the visit from the details screen.
   if (!ok || kIsWeb || !context.mounted) return;
@@ -29,17 +29,24 @@ Future<void> startVideoConsultation(BuildContext context, Appt a) async {
   );
 }
 
-/// Sends the patient their join link on WhatsApp (falls back to copying it).
+/// Sends the patient the booking confirmation with their token on WhatsApp (click-to-chat; the doctor taps
+/// Send). Online visits include the video link. Falls back to copying the text.
 Future<void> shareCallLink(BuildContext context, Appt a) async {
-  final link = callLink(a.id);
-  final text = 'Hello ${a.patient}, your video consultation (Token #${a.token}) is on ${Db.shortLabel(a.date)} at ${a.time}. '
-      'Join here: $link';
-  final digits = a.phone.replaceAll(RegExp(r'\D'), '');
-  if (digits.length >= 10 && await launchUrl(Uri.parse('https://wa.me/$digits?text=${Uri.encodeComponent(text)}'), mode: LaunchMode.externalApplication)) {
+  final text = [
+    'Hello ${a.patient}, your appointment with ${a.doctor.isEmpty ? 'the doctor' : a.doctor} is confirmed.',
+    'Date: ${Db.shortLabel(a.date)}, ${a.time}',
+    'Token: #${a.token}',
+    a.online
+        ? (a.data['callKey'] == null ? 'Your video link will follow shortly.' : 'Video consultation link: ${callLink(a.id, a.data['callKey'] as String)}')
+        : 'Please arrive 10 minutes early and show this token at the front desk.',
+  ].join('\n');
+  var digits = a.phone.replaceAll(RegExp(r'\D'), '');
+  if (digits.length == 10) digits = '91$digits'; // wa.me needs the country code
+  if (digits.length >= 11 && await launchUrl(Uri.parse('https://wa.me/$digits?text=${Uri.encodeComponent(text)}'), mode: LaunchMode.externalApplication)) {
     return;
   }
   await Clipboard.setData(ClipboardData(text: text));
-  if (context.mounted) snack(context, 'Video link copied — paste it to the patient.');
+  if (context.mounted) snack(context, 'Confirmation copied. Paste it to the patient.');
 }
 
 class _EndConsultationSheet extends StatefulWidget {

@@ -179,13 +179,26 @@ class PatientDetailScreen extends StatelessWidget {
       );
 }
 
-class _RecordsList extends StatelessWidget {
+class _RecordsList extends StatefulWidget {
   const _RecordsList(this.patientId);
   final String patientId;
 
   @override
+  State<_RecordsList> createState() => _RecordsListState();
+}
+
+class _RecordsListState extends State<_RecordsList> {
+  late final _stream = Db.records(widget.patientId).orderBy('createdAt', descending: true).snapshots();
+
+  @override
+  void initState() {
+    super.initState();
+    Db.audit('Viewed Medical Records', 'Patient Records', 'Opened records of patient ${widget.patientId}');
+  }
+
+  @override
   Widget build(BuildContext context) => StreamBuilder<QuerySnapshot<Json>>(
-        stream: Db.records(patientId).orderBy('createdAt', descending: true).snapshots(),
+        stream: _stream,
         builder: (context, snap) {
           if (snap.hasError) return Center(child: Text('${snap.error}'));
           if (!snap.hasData) return const Center(child: CircularProgressIndicator());
