@@ -119,6 +119,12 @@ patient-app catalogs. Logins (emulator only):
 | Doctor | doctor@demo.test | demo-doctor-123 | mobile app |
 | Patient | patient@demo.test | demo-patient-123 | mobile app |
 
+Demo on an Android phone: build `flutter build apk --debug --dart-define=USE_EMULATORS=true
+--dart-define=EMULATOR_HOST=<PC's Wi-Fi IP> --dart-define=PORTAL_URL=http://<PC's Wi-Fi IP>:3000`, start the
+emulators listening on the network (`"host": "0.0.0.0"` per emulator in `firebase.json`), and install
+`build/app/outputs/flutter-apk/app-debug.apk`. On the Android emulator, leave out `EMULATOR_HOST`; it uses 10.0.2.2.
+Plain-HTTP access to the emulators is enabled for debug builds only.
+
 Phone OTP in the demo: the Auth emulator shows the code in its log and in the Emulator UI.
 Video calls need a ZegoCloud AppID (`VITE_ZEGO_APP_ID`, `ZEGO_APP_ID`); everything else works offline.
 
@@ -186,6 +192,11 @@ Do these steps in order. Everything after step 1 runs from this folder.
    gcloud firestore backups schedules create --database='(default)' --recurrence=daily --retention=<period, e.g. 14w>
    ```
 7. **Mobile**:
+   - Android build toolchain: AGP 9.5.2 / Gradle 9.6.0, compileSdk 37, NDK 28.2 (needed by the Zego video
+     plugins). `android/settings.gradle.kts` makes the `zego_zim` plugin's obsolete `jcenter()` call a no-op, and
+     `android/build.gradle.kts` lifts plugins that compile against API ≤ 33 to 36.
+   - Release signing: create an upload keystore and a `signingConfigs.release` in `android/app/build.gradle.kts`.
+     Release builds currently use the debug key.
    - Android: `flutter build appbundle --dart-define-from-file=env.json`. Add the release SHA-1 and SHA-256 in
      Firebase project settings (needed for Google sign-in and phone auth).
    - iOS: build on a Mac (`flutter build ipa`). Add the APNs key for phone-auth silent push.

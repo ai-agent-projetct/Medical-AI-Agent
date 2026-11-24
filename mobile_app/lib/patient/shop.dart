@@ -70,19 +70,20 @@ class _MedicinesScreenState extends State<MedicinesScreen> {
                                   title: Text(m['name'] ?? '', style: const TextStyle(fontWeight: FontWeight.w600)),
                                   subtitle: Text('${m['pack'] ?? ''}\n₹${m['price']}${m['rx'] == true ? '  ·  Rx required' : ''}'),
                                   isThreeLine: true,
-                                  trailing: (_cart[m['id']] ?? 0) == 0
-                                      ? OutlinedButton(onPressed: () => setState(() => _cart[m['id']] = 1), child: const Text('Add'))
-                                      : Row(mainAxisSize: MainAxisSize.min, children: [
-                                          IconButton(
-                                              tooltip: 'Remove one',
-                                              onPressed: () => setState(() => _cart[m['id']] = _cart[m['id']]! - 1),
-                                              icon: const Icon(Icons.remove_circle_outline)),
-                                          Text('${_cart[m['id']]}'),
-                                          IconButton(
-                                              tooltip: 'Add one',
-                                              onPressed: () => setState(() => _cart[m['id']] = _cart[m['id']]! + 1),
-                                              icon: const Icon(Icons.add_circle_outline)),
-                                        ]),
+                                  // Fixed width: a free-sized stepper overflowed the tile on 360 dp phones.
+                                  trailing: SizedBox(
+                                    width: 104,
+                                    child: (_cart[m['id']] ?? 0) == 0
+                                        ? Align(
+                                            alignment: Alignment.centerRight,
+                                            child: OutlinedButton(onPressed: () => setState(() => _cart[m['id']] = 1), child: const Text('Add')),
+                                          )
+                                        : Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+                                            _stepButton('Remove one', Icons.remove_circle_outline, () => setState(() => _cart[m['id']] = (_cart[m['id']] ?? 1) - 1)),
+                                            SizedBox(width: 28, child: Text('${_cart[m['id']]}', textAlign: TextAlign.center)),
+                                            _stepButton('Add one', Icons.add_circle_outline, () => setState(() => _cart[m['id']] = (_cart[m['id']] ?? 0) + 1)),
+                                          ]),
+                                  ),
                                 ),
                               ),
                           ]),
@@ -92,6 +93,15 @@ class _MedicinesScreenState extends State<MedicinesScreen> {
         },
       );
 }
+
+Widget _stepButton(String tooltip, IconData icon, VoidCallback onPressed) => IconButton(
+      tooltip: tooltip,
+      onPressed: onPressed,
+      icon: Icon(icon),
+      visualDensity: VisualDensity.compact,
+      padding: EdgeInsets.zero,
+      constraints: const BoxConstraints.tightFor(width: 36, height: 36),
+    );
 
 /// Lab tests with home sample collection.
 class LabTestsScreen extends StatelessWidget {
@@ -167,7 +177,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
     final p = family.firstWhere((m) => m.id == _patientId).data();
     setState(() => _busy = true);
     final ok = await guard(context, () async {
-      final rxUrl = _rx == null ? null : await PDb.uploadPrescription(_rx!.bytes!, _rx!.name);
+      final rxUrl = _rx == null ? null : await PDb.uploadPrescription(await _rx!.readAsBytes(), _rx!.name);
       await PDb.placeOrder(
         kind: widget.kind,
         items: [for (final i in widget.items) {'id': i['id'], 'name': i['name'], 'price': i['price'], 'qty': i['qty'] ?? 1}],
@@ -231,8 +241,8 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
                 icon: const Icon(Icons.upload_file),
                 label: Text(_rx?.name ?? 'Upload prescription (required)'),
                 onPressed: () async {
-                  final r = await FilePicker.platform.pickFiles(withData: true, type: FileType.custom, allowedExtensions: ['pdf', 'jpg', 'jpeg', 'png']);
-                  if (r != null) setState(() => _rx = r.files.single);
+                  final f = await FilePicker.pickFile(type: FileType.custom, allowedExtensions: ['pdf', 'jpg', 'jpeg', 'png']);
+                  if (f != null) setState(() => _rx = f);
                 },
               ),
             ],

@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace = "com.trionova.ai_hospital_agent"
-    compileSdk = flutter.compileSdkVersion
+    compileSdk = 37 // plugins (permission_handler, androidx.core 1.19, local notifications) need API 37
     ndkVersion = flutter.ndkVersion
 
     compileOptions {

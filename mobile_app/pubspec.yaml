@@ -38,9 +38,9 @@ dependencies:
   firebase_auth: ^6.6.1
   cloud_firestore: ^6.9.0
   firebase_storage: ^13.5.0
-  zego_uikit_prebuilt_call: ^4.14.3
+  zego_uikit_prebuilt_call: ^4.24.7
   zego_uikit: ^2.28.23
-  file_picker: ^10.3.10
+  file_picker: ^13.1.0
   pdf: ^3.13.0
   printing: ^5.15.0
   url_launcher: ^6.3.2

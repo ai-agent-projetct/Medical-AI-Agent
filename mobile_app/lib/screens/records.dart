@@ -377,10 +377,12 @@ class _AddRecordScreenState extends State<AddRecordScreen> {
   bool _saving = false;
 
   Future<void> _pick() async {
-    final res = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['pdf', 'jpg', 'jpeg', 'png'], withData: true);
-    final f = res?.files.single;
+    final f = await FilePicker.pickFile(type: FileType.custom, allowedExtensions: ['pdf', 'jpg', 'jpeg', 'png']);
     if (f == null || !mounted) return;
-    if (f.size > 20 * 1024 * 1024) return snack(context, 'Attachment must be under 20 MB.');
+    if ((await f.length() ?? 0) > 20 * 1024 * 1024) {
+      if (mounted) snack(context, 'Attachment must be under 20 MB.');
+      return;
+    }
     setState(() => _file = f);
   }
 
@@ -389,10 +391,10 @@ class _AddRecordScreenState extends State<AddRecordScreen> {
     final ok = await guard(context, () async {
       final me = (await Db.doctor().get()).data() ?? {};
       Json attachment = {};
-      if (_file?.bytes != null) {
+      if (_file != null) {
         final ext = (_file!.extension ?? '').toLowerCase();
         final ref = FirebaseStorage.instance.ref('records/${widget.patientId}/${DateTime.now().millisecondsSinceEpoch}_${_file!.name}');
-        await ref.putData(_file!.bytes!, SettableMetadata(contentType: ext == 'pdf' ? 'application/pdf' : 'image/${ext == 'jpg' ? 'jpeg' : ext}'));
+        await ref.putData(await _file!.readAsBytes(), SettableMetadata(contentType: ext == 'pdf' ? 'application/pdf' : 'image/${ext == 'jpg' ? 'jpeg' : ext}'));
         attachment = {'fileUrl': await ref.getDownloadURL(), 'fileName': _file!.name};
       }
       final meds = _c['meds']!.text.split('\n').map((l) => l.trim()).where((l) => l.isNotEmpty).map((l) {

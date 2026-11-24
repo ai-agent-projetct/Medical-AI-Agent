@@ -89,18 +89,23 @@ class _UploadRecordScreenState extends State<UploadRecordScreen> {
   bool _busy = false;
 
   Future<void> _pick() async {
-    final r = await FilePicker.platform.pickFiles(withData: true, type: FileType.custom, allowedExtensions: ['pdf', 'jpg', 'jpeg', 'png']);
-    if (r != null) setState(() => _file = r.files.single);
+    final f = await FilePicker.pickFile(type: FileType.custom, allowedExtensions: ['pdf', 'jpg', 'jpeg', 'png']);
+    if (f != null) setState(() => _file = f);
   }
 
   Future<void> _save() async {
     if (_title.text.trim().isEmpty) return snack(context, 'Give the record a title');
-    if (_file != null && _file!.size > 20 * 1024 * 1024) return snack(context, 'File must be under 20 MB');
+    if (_file != null && (await _file!.length() ?? 0) > 20 * 1024 * 1024) {
+      if (mounted) snack(context, 'File must be under 20 MB');
+      return;
+    }
+    final bytes = await _file?.readAsBytes();
+    if (!mounted) return;
     setState(() => _busy = true);
     final ok = await guard(
       context,
       () => PDb.uploadRecord(widget.patientId,
-          type: _type, title: _title.text.trim(), notes: _notes.text.trim(), bytes: _file?.bytes, fileName: _file?.name),
+          type: _type, title: _title.text.trim(), notes: _notes.text.trim(), bytes: bytes, fileName: _file?.name),
       ok: 'Record saved',
     );
     if (!mounted) return;

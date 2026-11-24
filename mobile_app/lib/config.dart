@@ -22,5 +22,9 @@ String callLink(String appointmentId, [String? callKey]) => '$portalUrl/#/call/$
 /// (`npm run emulators` in the portal folder) with a demo project — no real keys needed.
 const useEmulators = bool.fromEnvironment('USE_EMULATORS');
 
+/// Emulator host for a physical phone on the same Wi-Fi (the PC's LAN IP). Default: 10.0.2.2 on the
+/// Android emulator, localhost elsewhere.
+const emulatorHost = String.fromEnvironment('EMULATOR_HOST');
+
 /// Version of the Terms & Privacy notice users consent to (DPDP Act 2023). Bump when the text changes.
 const consentVersion = '2026-11';

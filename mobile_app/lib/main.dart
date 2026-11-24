@@ -23,21 +23,23 @@ const _emulatorOptions = FirebaseOptions(
   projectId: 'demo-medical-ai',
   storageBucket: 'demo-medical-ai.appspot.com',
 );
-// ignore: unused_element
-SemanticsHandle? _semantics;
+/// Semantics tree kept on in emulator mode for browser test tooling; tests dispose it at the end.
+SemanticsHandle? emulatorSemantics;
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   try {
     await Firebase.initializeApp(options: useEmulators ? _emulatorOptions : DefaultFirebaseOptions.currentPlatform);
     if (useEmulators) {
-      // Android emulator reaches the host machine at 10.0.2.2.
-      final host = !kIsWeb && defaultTargetPlatform == TargetPlatform.android ? '10.0.2.2' : '127.0.0.1';
+      // Android emulator reaches the host machine at 10.0.2.2; a real phone uses EMULATOR_HOST (PC LAN IP).
+      final host = emulatorHost.isNotEmpty
+          ? emulatorHost
+          : !kIsWeb && defaultTargetPlatform == TargetPlatform.android ? '10.0.2.2' : '127.0.0.1';
       await FirebaseAuth.instance.useAuthEmulator(host, 9099);
       FirebaseFirestore.instance.useFirestoreEmulator(host, 8181);
       await FirebaseStorage.instance.useStorageEmulator(host, 9199);
       functions.useFunctionsEmulator(host, 5001);
-      _semantics = SemanticsBinding.instance.ensureSemantics(); // exposes widgets to browser test tooling
+      emulatorSemantics = SemanticsBinding.instance.ensureSemantics(); // exposes widgets to browser test tooling
     }
   } catch (e) {
     runApp(MaterialApp(home: Scaffold(body: Center(child: Padding(padding: const EdgeInsets.all(24), child: Text('$e'))))));

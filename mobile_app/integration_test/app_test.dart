@@ -326,6 +326,8 @@ void main() {
 
     FlutterError.onError = frameworkOnError;
     expect(errors, isEmpty, reason: 'Flutter framework errors during the run');
+    app.emulatorSemantics?.dispose(); // the framework requires every SemanticsHandle disposed by the end
+    app.emulatorSemantics = null;
     await mark('PASS all steps');
     } catch (e, st) {
       final where = st.toString().split('\n').where((l) => !l.contains('dart-sdk') && (l.contains('lib/') || l.contains('integration_test/'))).take(8).join(' <- ');

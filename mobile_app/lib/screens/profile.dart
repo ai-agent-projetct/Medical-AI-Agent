@@ -80,13 +80,17 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   }
 
   Future<void> _pickPhoto() async {
-    final res = await FilePicker.platform.pickFiles(type: FileType.image, withData: true);
-    final file = res?.files.single;
-    if (file?.bytes == null || !mounted) return;
-    if (file!.size > 5 * 1024 * 1024) return snack(context, 'Photo must be under 5 MB.');
+    final file = await FilePicker.pickFile(type: FileType.image);
+    if (file == null || !mounted) return;
+    if ((await file.length() ?? 0) > 5 * 1024 * 1024) {
+      if (mounted) snack(context, 'Photo must be under 5 MB.');
+      return;
+    }
+    final bytes = await file.readAsBytes();
+    if (!mounted) return;
     await guard(context, () async {
       final ref = FirebaseStorage.instance.ref('doctors/$uid/avatar_${DateTime.now().millisecondsSinceEpoch}.${file.extension ?? 'jpg'}');
-      await ref.putData(file.bytes!, SettableMetadata(contentType: 'image/${file.extension ?? 'jpeg'}'));
+      await ref.putData(bytes, SettableMetadata(contentType: 'image/${file.extension ?? 'jpeg'}'));
       final url = await ref.getDownloadURL();
       setState(() => _photoUrl = url);
     });
