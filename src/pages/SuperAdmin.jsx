@@ -12,10 +12,11 @@ import { Modal, inr } from './hms/common';
 export const MODULES = {
   billing: 'OPD billing & claims', pharmacy: 'Pharmacy & inventory', ipd: 'In-patient & beds', telehealth: 'Video consults',
   assets: 'Equipment & maintenance', voice: 'AI voice receptionist', ai: 'AI scribe & CDSS',
+  clinical: 'Lab, radiology, OT, emergency, nursing & blood bank', hrms: 'HR & payroll', erp: 'Stores, accounts & support services',
 };
 export const PLANS = {
   Basic: ['billing', 'pharmacy'],
-  Pro: ['billing', 'pharmacy', 'ipd', 'telehealth', 'assets'],
+  Pro: ['billing', 'pharmacy', 'ipd', 'telehealth', 'assets', 'clinical'],
   Enterprise: Object.keys(MODULES),
 };
 const slug = (name) => `${name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 24)}-${Math.random().toString(36).slice(2, 6)}`;

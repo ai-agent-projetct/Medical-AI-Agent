@@ -482,3 +482,57 @@ describe('storage', () => {
     await assertFails(uploadString(ref(st('doc1'), 'doctors/doc1/a.exe'), 'x', 'raw', { contentType: 'application/x-msdownload' }));
   });
 });
+
+describe('hospital suite (lab, nursing, ER, OT, HRMS, stores, accounts, services)', () => {
+  const lab = (extra = {}) => by('doc1', { patientId: 'pat', patientName: 'Asha', status: 'Ordered', tests: [], ...H1, ...extra });
+  test('clinical staff write lab orders in their own hospital only, stamped by themselves', async () => {
+    await assertSucceeds(setDoc(doc(fs('doc1'), 'labOrders/l1'), lab()));
+    await assertFails(setDoc(doc(fs('doc1'), 'labOrders/l2'), { ...lab(), updatedBy: 'doc2' }));
+    await assertFails(setDoc(doc(fs('doc1'), 'labOrders/l3'), lab({ hospitalId: 'h2' })));
+    await assertFails(setDoc(doc(fs('bill'), 'labOrders/l4'), by('bill', lab())));
+    await assertFails(getDoc(doc(fs('recep2'), 'labOrders/l1')));
+    await assertSucceeds(getDoc(doc(fs('bill'), 'labOrders/l1')));
+  });
+  test('patients read only their own verified reports', async () => {
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), 'labOrders/v1'), lab({ status: 'Verified' }));
+      await setDoc(doc(ctx.firestore(), 'labOrders/v2'), lab({ status: 'Resulted' }));
+      await setDoc(doc(ctx.firestore(), 'vitals/x1'), by('nurse', { patientId: 'pat', news2: 1, ...H1 }));
+    });
+    await assertSucceeds(getDoc(doc(fs('pat'), 'labOrders/v1')));
+    await assertFails(getDoc(doc(fs('pat'), 'labOrders/v2')));
+    await assertFails(getDoc(doc(fs('pat2'), 'labOrders/v1')));
+    await assertSucceeds(getDoc(doc(fs('pat'), 'vitals/x1')));
+    await assertSucceeds(getDocs(query(collection(fs('pat'), 'labOrders'), where('patientId', '==', 'pat'), where('status', '==', 'Verified'))));
+  });
+  test('vitals and medication charts: ward clinicians write, front desk cannot', async () => {
+    await assertSucceeds(setDoc(doc(fs('nurse'), 'vitals/w1'), by('nurse', { patientId: 'p1', news2: 3, ...H1 })));
+    await assertFails(setDoc(doc(fs('recep'), 'vitals/w2'), by('recep', { patientId: 'p1', ...H1 })));
+    await assertFails(getDoc(doc(fs('bill'), 'vitals/w1')));
+  });
+  test('salaries and attendance are HR-only', async () => {
+    await assertSucceeds(setDoc(doc(fs('ops'), 'employees/e1'), by('ops', { name: 'Meena', basic: 20000, ...H1 })));
+    await assertFails(getDoc(doc(fs('doc1'), 'employees/e1')));
+    await assertFails(getDoc(doc(fs('nurse'), 'employees/e1')));
+    await assertSucceeds(setDoc(doc(fs('admin'), 'payroll/2026-11_e1'), by('admin', { net: 18000, ...H1 })));
+    await assertFails(getDoc(doc(fs('admin2'), 'payroll/2026-11_e1')));
+  });
+  test('accounts: billing and admins only; hospital cannot be changed; only admins delete', async () => {
+    await assertSucceeds(setDoc(doc(fs('bill'), 'expenses/x1'), by('bill', { amount: 500, ...H1 })));
+    await assertFails(getDoc(doc(fs('recep'), 'expenses/x1')));
+    await assertFails(updateDoc(doc(fs('bill'), 'expenses/x1'), by('bill', { hospitalId: 'h2' })));
+    await assertFails(deleteDoc(doc(fs('bill'), 'expenses/x1')));
+    await assertSucceeds(deleteDoc(doc(fs('admin'), 'expenses/x1')));
+  });
+  test('support services: any enabled staff; disabled, suspended and other hospitals refused', async () => {
+    await assertSucceeds(setDoc(doc(fs('recep'), 'visitors/v1'), by('recep', { name: 'Kumar', status: 'In', ...H1 })));
+    await assertFails(setDoc(doc(fs('off'), 'visitors/v2'), by('off', { name: 'X', ...H1 })));
+    await assertFails(setDoc(doc(fs('susp'), 'visitors/v3'), by('susp', { name: 'X', hospitalId: 'h3' })));
+    await assertFails(getDoc(doc(fs('recep2'), 'visitors/v1')));
+    await assertSucceeds(getDoc(doc(fs('owner'), 'visitors/v1')));
+  });
+  test('collections outside the suite map are not opened by the wildcard rule', async () => {
+    await assertFails(setDoc(doc(fs('admin'), 'randomStuff/z1'), by('admin', H1)));
+    await assertFails(getDoc(doc(fs('pat'), 'employees/e1')));
+  });
+});

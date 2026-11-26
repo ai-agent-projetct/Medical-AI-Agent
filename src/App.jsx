@@ -2,7 +2,9 @@ import React, { Suspense, lazy, useEffect, useState } from 'react';
 import {
   Activity, Users, Calendar, Phone, Video, Sparkles, CreditCard,
   TrendingUp, UserPlus, ShieldCheck, Bell, Settings, HeartPulse, FileText,
-  Lock, AlertCircle, Pill, PenTool, Eye, Layers, HelpCircle, Shield, Zap, Bot, Stethoscope, Cpu, LogOut
+  Lock, AlertCircle, Pill, PenTool, Eye, Layers, HelpCircle, Shield, Zap, Bot, Stethoscope, Cpu, LogOut,
+  Gauge, UserSearch, BarChart3, Siren, FlaskConical, ScanLine, Scissors, Droplet, Syringe, Tv, Briefcase, Package, Wallet,
+  Ambulance, Utensils, SprayCan, Shirt, IdCard, MessageSquare, TriangleAlert, Award
 } from 'lucide-react';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { serverTimestamp } from 'firebase/firestore';
@@ -14,6 +16,19 @@ import Login from './pages/Login';
 import SuperAdmin from './pages/SuperAdmin';
 import UsersRoles from './pages/UsersRoles';
 import Equipment from './pages/Equipment';
+// Hospital suite (loaded on first open so the portal bundle stays small).
+const CommandCentre = lazy(() => import('./pages/suite/CommandCentre'));
+const Patient360 = lazy(() => import('./pages/suite/Patient360'));
+const DoctorInsights = lazy(() => import('./pages/suite/DoctorInsights'));
+const Emergency = lazy(() => import('./pages/suite/Emergency'));
+const Nursing = lazy(() => import('./pages/suite/Nursing'));
+const Lab = lazy(() => import('./pages/suite/Lab'));
+const OT = lazy(() => import('./pages/suite/OT'));
+const QueueBoard = lazy(() => import('./pages/suite/QueueBoard'));
+const Hrms = lazy(() => import('./pages/suite/Hrms'));
+const Stores = lazy(() => import('./pages/suite/Stores'));
+const Accounts = lazy(() => import('./pages/suite/Accounts'));
+const Services = lazy(() => import('./pages/suite/Services'));
 const CallRoom = lazy(() => import('./pages/CallRoom')); // Zego SDK is ~5 MB; only load it for calls
 
 import Dashboard from './pages/Dashboard';
@@ -102,6 +117,19 @@ export default function App() {
 
 // Which portal tabs each role sees (editable at runtime in the RBAC page). Firestore rules are the real guard.
 const PLATFORM_TABS = ['platform', 'audit', 'support', 'privacy', 'health'];
+const SUITE_CLINICAL = ['command', 'patient360', 'doctor-insights', 'er', 'nursing', 'lab', 'radiology', 'ot', 'bloodbank', 'vaccination', 'queue'];
+const SUITE_OPS = ['hrms', 'stores', 'accounts', 'ambulance', 'diet', 'housekeeping', 'cssd', 'laundry', 'visitors', 'feedback', 'incidents', 'quality'];
+const SUITE_TABS = {
+  'Super Admin': [...SUITE_CLINICAL, ...SUITE_OPS],
+  'Hospital Admin': [...SUITE_CLINICAL, ...SUITE_OPS],
+  'Doctor': ['patient360', 'doctor-insights', 'er', 'nursing', 'lab', 'radiology', 'ot', 'bloodbank', 'vaccination', 'queue', 'incidents'],
+  'Nurse': ['patient360', 'er', 'nursing', 'lab', 'radiology', 'ot', 'bloodbank', 'vaccination', 'queue', 'diet', 'housekeeping', 'cssd', 'visitors', 'incidents'],
+  'Lab Technician': ['patient360', 'lab', 'radiology', 'bloodbank', 'incidents'],
+  'Receptionist': ['patient360', 'er', 'lab', 'radiology', 'queue', 'vaccination', 'ambulance', 'visitors', 'feedback', 'incidents'],
+  'Pharmacist': ['stores', 'incidents'],
+  'Billing Staff': ['patient360', 'lab', 'accounts', 'incidents'],
+  'Administration': ['command', 'hrms', 'stores', 'ambulance', 'diet', 'housekeeping', 'cssd', 'laundry', 'visitors', 'feedback', 'incidents', 'quality'],
+};
 const BASE_PERMISSIONS = {
   'Super Admin': ['platform', 'users', 'assets', 'voice', 'hms-billing', 'hms-pos', 'hms-pharmacy', 'hms-ipd', 'hms-claims', 'hms-tariff', 'hms-reports', 'dashboard', 'futuristic', 'agentic', 'doctors', 'patients', 'departments', 'appointments', 'ivr', 'online', 'scribe', 'freed', 'printer', 'prescriptions', 'signature', 'profile', 'payouts', 'payments', 'orders', 'revenue', 'staff', 'roles', 'notifications', 'settings', 'support', 'privacy', 'health', 'audit'],
   'Hospital Admin': ['users', 'assets', 'voice', 'hms-billing', 'hms-pos', 'hms-pharmacy', 'hms-ipd', 'hms-claims', 'hms-tariff', 'hms-reports', 'dashboard', 'futuristic', 'agentic', 'doctors', 'patients', 'departments', 'appointments', 'ivr', 'online', 'scribe', 'freed', 'printer', 'prescriptions', 'payouts', 'payments', 'orders', 'revenue', 'notifications', 'settings', 'support', 'privacy', 'health', 'audit'],
@@ -114,11 +142,16 @@ const BASE_PERMISSIONS = {
   'Administration': ['dashboard', 'assets', 'departments', 'staff', 'notifications', 'support', 'privacy', 'health'],
 };
 
+for (const [role, tabs] of Object.entries(SUITE_TABS)) BASE_PERMISSIONS[role] = [...BASE_PERMISSIONS[role], ...tabs];
+
 // Plan modules a hospital has bought (hospitals/{id}.modules); tabs of other modules are hidden.
 const MODULE_OF = {
   'hms-billing': 'billing', 'hms-pos': 'pharmacy', 'hms-pharmacy': 'pharmacy', 'hms-ipd': 'ipd', 'hms-claims': 'billing',
   'hms-tariff': 'billing', 'hms-reports': 'billing', voice: 'voice', ivr: 'voice', agentic: 'voice', assets: 'assets',
   online: 'telehealth', scribe: 'ai', freed: 'ai', printer: 'ai', futuristic: 'ai',
+  er: 'clinical', nursing: 'clinical', lab: 'clinical', radiology: 'clinical', ot: 'clinical', bloodbank: 'clinical', vaccination: 'clinical',
+  hrms: 'hrms', stores: 'erp', accounts: 'erp', ambulance: 'erp', diet: 'erp', housekeeping: 'erp', cssd: 'erp', laundry: 'erp',
+  visitors: 'erp', feedback: 'erp', incidents: 'erp', quality: 'erp',
 };
 const hasModule = (key) => !firebaseEnabled || !tenant.hospital?.modules || !MODULE_OF[key] || tenant.hospital.modules.includes(MODULE_OF[key]);
 
@@ -128,6 +161,7 @@ function Portal({ initialRole, canSwitchRole, isSuper }) {
   const [currentRole, setCurrentRole] = useState(initialRole);
   const [activeTab, setActiveTab] = useState(platformOnly ? 'platform' : initialRole === 'Pharmacist' ? 'hms-pos' : 'dashboard');
   const [showNotificationsDrawer, setShowNotificationsDrawer] = useState(false);
+  const [openPatient, setOpenPatient] = useState(null); // Doctor Insights → Patient 360
 
   // 1. Initial State for Doctors
   const [doctors, setDoctors, sampleDoctors] = useLiveCollection('doctors', [
@@ -277,6 +311,29 @@ function Portal({ initialRole, canSwitchRole, isSuper }) {
     { key: 'users', label: 'Users, Roles & Logins', icon: <UserPlus size={18} />, section: 'management' },
     { key: 'assets', label: 'Equipment & Maintenance', icon: <Settings size={18} />, section: 'operations' },
     { key: 'dashboard', label: 'Dashboard', icon: <Activity size={18} />, section: 'main' },
+    { key: 'command', label: 'Command Centre', icon: <Gauge size={18} />, section: 'main' },
+    { key: 'patient360', label: 'Patient 360', icon: <UserSearch size={18} />, section: 'departments' },
+    { key: 'doctor-insights', label: 'Doctor Insights', icon: <BarChart3 size={18} />, section: 'departments' },
+    { key: 'er', label: 'Emergency & Triage', icon: <Siren size={18} />, section: 'departments' },
+    { key: 'nursing', label: 'Nursing Station', icon: <HeartPulse size={18} />, section: 'departments' },
+    { key: 'lab', label: 'Laboratory (LIS)', icon: <FlaskConical size={18} />, section: 'departments' },
+    { key: 'radiology', label: 'Radiology & Imaging', icon: <ScanLine size={18} />, section: 'departments' },
+    { key: 'ot', label: 'Operation Theatre', icon: <Scissors size={18} />, section: 'departments' },
+    { key: 'bloodbank', label: 'Blood Bank', icon: <Droplet size={18} />, section: 'departments' },
+    { key: 'vaccination', label: 'Vaccination', icon: <Syringe size={18} />, section: 'departments' },
+    { key: 'queue', label: 'Token Display (TV)', icon: <Tv size={18} />, section: 'departments' },
+    { key: 'hrms', label: 'HR & Payroll', icon: <Briefcase size={18} />, section: 'erp' },
+    { key: 'stores', label: 'Stores & Purchase', icon: <Package size={18} />, section: 'erp' },
+    { key: 'accounts', label: 'Accounts & Finance', icon: <Wallet size={18} />, section: 'erp' },
+    { key: 'ambulance', label: 'Ambulance', icon: <Ambulance size={18} />, section: 'erp' },
+    { key: 'diet', label: 'Diet & Kitchen', icon: <Utensils size={18} />, section: 'erp' },
+    { key: 'housekeeping', label: 'Housekeeping', icon: <SprayCan size={18} />, section: 'erp' },
+    { key: 'cssd', label: 'CSSD Sterilisation', icon: <ShieldCheck size={18} />, section: 'erp' },
+    { key: 'laundry', label: 'Laundry & Linen', icon: <Shirt size={18} />, section: 'erp' },
+    { key: 'visitors', label: 'Visitors & Passes', icon: <IdCard size={18} />, section: 'erp' },
+    { key: 'feedback', label: 'Patient Feedback', icon: <MessageSquare size={18} />, section: 'erp' },
+    { key: 'incidents', label: 'Incidents & Safety', icon: <TriangleAlert size={18} />, section: 'erp' },
+    { key: 'quality', label: 'Quality (NABH)', icon: <Award size={18} />, section: 'erp' },
     { key: 'futuristic', label: 'Futuristic AI Care Matrix 🚀', icon: <Cpu size={18} style={{ color: '#86198f' }} />, section: 'main' },
     { key: 'agentic', label: 'Agentic 6-Lang Voice 🤖', icon: <Bot size={18} style={{ color: '#0284c7' }} />, section: 'main' },
     { key: 'freed', label: 'Freed & OpenScribe Studio ✨', icon: <Zap size={18} style={{ color: '#a855f7' }} />, section: 'clinical' },
@@ -358,6 +415,26 @@ function Portal({ initialRole, canSwitchRole, isSuper }) {
                 className={`nav-link ${activeTab === item.key ? 'active' : ''}`}
                 onClick={() => setActiveTab(item.key)}
               >
+                {item.icon}
+                <span>{item.label}</span>
+              </a>
+            ))}
+
+          {showSection('departments') && <div className="nav-section-title">Clinical Departments</div>}
+          {navigationItems
+            .filter(item => item.section === 'departments' && rolePermissions[currentRole]?.includes(item.key) && hasModule(item.key))
+            .map((item) => (
+              <a key={item.key} className={`nav-link ${activeTab === item.key ? 'active' : ''}`} onClick={() => setActiveTab(item.key)}>
+                {item.icon}
+                <span>{item.label}</span>
+              </a>
+            ))}
+
+          {showSection('erp') && <div className="nav-section-title">Hospital Operations (ERP)</div>}
+          {navigationItems
+            .filter(item => item.section === 'erp' && rolePermissions[currentRole]?.includes(item.key) && hasModule(item.key))
+            .map((item) => (
+              <a key={item.key} className={`nav-link ${activeTab === item.key ? 'active' : ''}`} onClick={() => setActiveTab(item.key)}>
                 {item.icon}
                 <span>{item.label}</span>
               </a>
@@ -758,6 +835,20 @@ function Portal({ initialRole, canSwitchRole, isSuper }) {
               )}
               {activeTab === 'platform' && <SuperAdmin />}
               {activeTab === 'users' && <UsersRoles />}
+              <Suspense fallback={<div className="card">Loading…</div>}>
+                {activeTab === 'command' && <CommandCentre go={setActiveTab} />}
+                {activeTab === 'patient360' && <Patient360 key={openPatient?.id ?? 'none'} initial={openPatient} />}
+                {activeTab === 'doctor-insights' && <DoctorInsights doctors={doctors} openPatient={(p) => { setOpenPatient(p); setActiveTab('patient360'); }} />}
+                {activeTab === 'er' && <Emergency doctors={doctors} />}
+                {activeTab === 'nursing' && <Nursing />}
+                {activeTab === 'lab' && <Lab doctors={doctors} />}
+                {activeTab === 'ot' && <OT doctors={doctors} />}
+                {activeTab === 'queue' && <QueueBoard />}
+                {activeTab === 'hrms' && <Hrms />}
+                {activeTab === 'stores' && <Stores canEdit={!['Doctor', 'Nurse', 'Receptionist', 'Lab Technician', 'Billing Staff'].includes(currentRole)} />}
+                {activeTab === 'accounts' && <Accounts />}
+                {['radiology', 'bloodbank', 'vaccination', 'ambulance', 'diet', 'housekeeping', 'cssd', 'laundry', 'visitors', 'feedback', 'incidents', 'quality'].includes(activeTab) && <Services module={activeTab} />}
+              </Suspense>
               {activeTab === 'assets' && <Equipment canEdit={['Super Admin', 'Hospital Admin', 'Administration'].includes(currentRole)} />}
               {activeTab === 'audit' && (
                 <AuditLogs 

@@ -45,9 +45,9 @@ const consent = { version: '2026-11', at: now };
 const H1 = 'city-general';
 const H2 = 'lake-view';
 const HOSPITAL_1 = 'City General Hospital';
-const ALL_MODULES = ['billing', 'pharmacy', 'ipd', 'telehealth', 'assets', 'voice', 'ai'];
+const ALL_MODULES = ['billing', 'pharmacy', 'ipd', 'telehealth', 'assets', 'voice', 'ai', 'clinical', 'hrms', 'erp'];
 await put(`hospitals/${H1}`, { name: HOSPITAL_1, city: 'Chennai', address: '12 Anna Salai', phone: '+91 44 4000 1000', email: 'desk@citygeneral.test', gstin: '33AAACC1234A1Z5', plan: 'Enterprise', modules: ALL_MODULES, status: 'Active', createdAt: now });
-await put(`hospitals/${H2}`, { name: 'Lake View Clinic', city: 'Bengaluru', address: '4 Lake Road', phone: '+91 80 4000 2000', email: 'desk@lakeview.test', gstin: '29AAACL1234A1Z5', plan: 'Pro', modules: ['billing', 'pharmacy', 'ipd', 'telehealth', 'assets'], status: 'Active', createdAt: now });
+await put(`hospitals/${H2}`, { name: 'Lake View Clinic', city: 'Bengaluru', address: '4 Lake Road', phone: '+91 80 4000 2000', email: 'desk@lakeview.test', gstin: '29AAACL1234A1Z5', plan: 'Pro', modules: ['billing', 'pharmacy', 'ipd', 'telehealth', 'assets', 'clinical'], status: 'Active', createdAt: now });
 const at1 = (d) => ({ ...d, hospitalId: H1 });
 
 // ---- staff logins (emulator-only demo passwords) ----

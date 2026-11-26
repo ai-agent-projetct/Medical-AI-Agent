@@ -77,6 +77,43 @@ limits, so they don't download whole collections.
   `receptionNumber`). Calls to that number book with that hospital's doctors. `DEFAULT_HOSPITAL_ID` handles
   unknown numbers.
 
+### Hospital suite (clinical departments and ERP)
+
+Portal pages under `src/pages/suite/`, gated by role and by plan module (`clinical`, `hrms`, `erp` in
+`hospitals/{id}.modules`):
+
+- **Command Centre**: beds, emergency, theatres, lab, deteriorating patients, OPD flow, blood stock,
+  equipment down, staff present and today's collections on one screen.
+- **Patient 360**: one timeline of visits, admissions, labs, imaging, surgeries, ER visits, bills and vitals,
+  with lab and vital trends, medicine safety (interactions and allergies) and points to note. Prints a health summary.
+- **Doctor Insights**: consultations, unique, new and returning patients, outcomes, busiest hours, top diagnoses
+  and medicines, ratings, and each patient's journey with the doctor.
+- **Laboratory (LIS)**: orders and panels, sample labels, results with automatic H/L/critical flags, delta check
+  against the previous result, verification, critical-result call log, report print / WhatsApp, and billing to
+  OPD or the running IPD bill.
+- **Nursing Station**: ward board with NEWS2 early-warning scores and the action to take, vitals trends, medication
+  administration record (give / hold per dose) with interaction and allergy checks, and shift notes.
+- **Emergency & Triage**: ESI 1–5 triage with NEWS2, board ordered by acuity with door-to-doctor timers against
+  the target, MLC register and intimation print, and disposition.
+- **Operation Theatre**: scheduling by theatre with clash check, live board, the WHO surgical safety checklist
+  enforced before induction, incision and leaving OT, and operation notes.
+- **HR & Payroll**: employee master (statutory and bank details, council registration expiry), attendance,
+  leave with balances, payroll with PF, ESI, PT and TDS and loss of pay, payslips, bank file, and a PF/ESI statement.
+- **Stores & Purchase**: store items, department indents and issues, purchase orders and goods receipt (stock
+  moves use `increment()`), vendors, and reorder and expiry alerts.
+- **Accounts & Finance**: day-end closing against receipts by mode with cash variance, expenses register, and
+  monthly profit and loss with a GST summary.
+- **Registers**: radiology, blood bank, vaccination, ambulance, diet and kitchen, housekeeping, CSSD, laundry,
+  visitors, patient feedback, incidents (with CAPA), and NABH quality indicators. These are defined in `Services.jsx`.
+- **TV token display**: each doctor's current and next tokens, with a spoken announcement.
+
+The scores and alerts (`src/clinical.js`: NEWS2, lab flags, drug interactions and allergies, payslip) are
+decision support and are unit-tested.
+
+These collections share one rule in `firestore.rules`. `suite()` maps each collection to the roles that may
+read it and write it. Patients can read their own verified reports, vitals and vaccinations. The
+`suiteAudit-*` functions write every change to the audit trail.
+
 Both apps share appointments (token numbers, 30-min slots from each doctor's schedule), patient **medical records**
 (consultation notes, vitals, prescriptions, lab-report uploads) and **ZegoCloud video consultations**. The video
 room ID is the appointment ID. The patient joins at `<portal>/#/call/<appointmentId>` (no account needed),

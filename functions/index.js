@@ -275,3 +275,15 @@ export const auditInvoices = onDocumentWritten('invoices/{id}', (e) => trail(e, 
 export const auditAssets = onDocumentWritten('assets/{id}', (e) => trail(e, 'Equipment'));
 export const auditMaintenance = onDocumentWritten('maintenance/{id}', (e) => trail(e, 'Equipment'));
 export const auditUsers = onDocumentWritten('users/{id}', (e) => trail(e, 'Users & Roles'));
+
+// Hospital suite modules: change history for each collection (deployed as suiteAudit-<collection>).
+const SUITE_AUDIT = {
+  labOrders: 'Laboratory', radiologyOrders: 'Radiology', vitals: 'Nursing', medAdmin: 'Nursing', nursingNotes: 'Nursing',
+  erVisits: 'Emergency', surgeries: 'Operation Theatre', employees: 'HRMS', attendance: 'HRMS', leaves: 'HRMS', payroll: 'HRMS',
+  storeItems: 'Stores', purchaseOrders: 'Stores', vendors: 'Stores', indents: 'Stores', expenses: 'Accounts', dayClosings: 'Accounts',
+  bloodUnits: 'Blood Bank', ambulanceTrips: 'Ambulance', housekeeping: 'Support Services', dietOrders: 'Support Services',
+  cssdBatches: 'Support Services', laundry: 'Support Services', visitors: 'Front Office', vaccinations: 'Clinical',
+  feedback: 'Quality', incidents: 'Quality', qualityIndicators: 'Quality',
+};
+export const suiteAudit = Object.fromEntries(Object.entries(SUITE_AUDIT)
+  .map(([c, module]) => [c, onDocumentWritten(`${c}/{id}`, (e) => trail(e, module))]));

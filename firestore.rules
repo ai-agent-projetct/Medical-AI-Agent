@@ -250,6 +250,42 @@ service cloud.firestore {
       allow update: if updateIn(ASSETS()) && by();
     }
 
+    // ---- Hospital suite (lab, radiology, nursing, ER, OT, HRMS, stores, accounts, support services) ----
+    // One rule for many hospital-owned collections: suite()[collection] = {r: roles that read, w: roles that write}.
+    // Every write is stamped updatedBy (audited by the suiteAudit functions); only admins delete.
+    function suite() {
+      let s = STAFF();
+      let clin = CLINICAL();
+      let ward = ['admin', 'hospital_admin', 'doctor', 'nurse'];
+      let hr = ASSETS();
+      let store = ['admin', 'hospital_admin', 'admin_staff', 'pharmacist'];
+      let acct = ['admin', 'hospital_admin', 'billing'];
+      return {
+        'labOrders': {'r': s, 'w': clin}, 'radiologyOrders': {'r': s, 'w': clin},
+        'vitals': {'r': clin, 'w': ward}, 'medAdmin': {'r': clin, 'w': ward}, 'nursingNotes': {'r': clin, 'w': ward},
+        'erVisits': {'r': s, 'w': clin}, 'surgeries': {'r': s, 'w': ward},
+        'employees': {'r': hr, 'w': hr}, 'attendance': {'r': hr, 'w': hr}, 'leaves': {'r': hr, 'w': hr}, 'payroll': {'r': hr, 'w': hr},
+        'storeItems': {'r': s, 'w': store}, 'purchaseOrders': {'r': store, 'w': store}, 'vendors': {'r': s, 'w': store}, 'indents': {'r': s, 'w': s},
+        'expenses': {'r': acct, 'w': acct}, 'dayClosings': {'r': acct, 'w': acct},
+        'bloodUnits': {'r': s, 'w': clin}, 'ambulanceTrips': {'r': s, 'w': s}, 'housekeeping': {'r': s, 'w': s},
+        'dietOrders': {'r': s, 'w': s}, 'cssdBatches': {'r': s, 'w': s}, 'laundry': {'r': s, 'w': s}, 'visitors': {'r': s, 'w': s},
+        'vaccinations': {'r': clin, 'w': clin}, 'feedback': {'r': s, 'w': s}, 'incidents': {'r': s, 'w': s},
+        'qualityIndicators': {'r': s, 'w': ASSETS()}, 'queueDisplays': {'r': s, 'w': clin}
+      };
+    }
+    // Patients (app) read their own verified reports and observations.
+    function patientReadable(c) {
+      return c in ['labOrders', 'radiologyOrders', 'vitals', 'vaccinations'] && isPatient()
+        && (c in ['vitals', 'vaccinations'] || resource.data.get('status', '') == 'Verified')
+        && ownsPatient(resource.data.get('patientId', '-'));
+    }
+    match /{coll}/{id} {
+      allow read: if suite().get(coll, null) != null && (readIn(suite()[coll].r) || patientReadable(coll));
+      allow create: if suite().get(coll, null) != null && createIn(suite()[coll].w) && by();
+      allow update: if suite().get(coll, null) != null && updateIn(suite()[coll].w) && by();
+      allow delete: if suite().get(coll, null) != null && readIn(ADMINS());
+    }
+
     // Append-only audit trail (logins, logouts, views, changes): written as yourself into your own
     // hospital's log; the hospital's admins and the platform read it; nobody edits or deletes.
     match /auditLogs/{id} {

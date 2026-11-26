@@ -24,7 +24,8 @@ export function auditEntry(before, after, module, docPath) {
   const keys = Object.keys(changes);
   if (!keys.length) return null;
   const action = !before ? 'Created' : !after ? 'Deleted' : 'Updated';
-  const label = after?.name ?? after?.patient ?? after?.number ?? before?.name ?? before?.patient ?? before?.number ?? docPath.split('/').pop();
+  const pick = (d) => d?.name ?? d?.patient ?? d?.number ?? d?.patientName ?? d?.empName ?? d?.orderNo ?? d?.poNo ?? d?.erNo;
+  const label = pick(after) ?? pick(before) ?? docPath.split('/').pop();
   const details = action === 'Updated'
     ? `${label}: ${keys.slice(0, 6).map((k) => `${k} "${changes[k].from}" → "${changes[k].to}"`).join('; ')}${keys.length > 6 ? ` (+${keys.length - 6} more)` : ''}`
     : `${action} ${label}`;
