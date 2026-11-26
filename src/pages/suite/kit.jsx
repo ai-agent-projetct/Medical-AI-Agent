@@ -163,7 +163,7 @@ export function Registry({ collection, title, desc, fields, statuses, columns, d
             <tbody>
               {shown.map((r) => (
                 <tr key={r.id}>
-                  {cols.map((k, i) => <td key={k}>{i === 0 ? <strong>{String(r[k] ?? '')}</strong> : typeof r[k] === 'boolean' ? (r[k] ? 'Yes' : 'No') : String(r[k] ?? '')}</td>)}
+                  {cols.map((k, i) => <td key={k}>{i === 0 ? <strong>{String(r[k] ?? '')}</strong> : typeof r[k] === 'boolean' ? (r[k] ? 'Yes' : 'No') : /^https:\/\//.test(r[k] ?? '') ? <a href={r[k]} target="_blank" rel="noreferrer">Open</a> : String(r[k] ?? '')}</td>)}
                   <td>
                     {canEdit ? (
                       <select className={`badge ${badgeFor(r.status)}`} style={{ border: 0 }} aria-label={`Status of ${r[cols[0]]}`} value={r.status}

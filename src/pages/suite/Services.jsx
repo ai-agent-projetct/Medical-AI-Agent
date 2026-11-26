@@ -1,6 +1,7 @@
 import React from 'react';
 import { todayYmd } from '../../hms';
 import { Registry } from './kit';
+import { LIFE_BENEFITS, SCHEMES } from '../hms/Claims';
 
 const P = { k: 'patient', label: 'Patient', patient: true };
 const soon = (days) => new Date(Date.now() + days * 86_400_000).toLocaleDateString('en-CA');
@@ -12,13 +13,33 @@ const NABH = ['Hand hygiene compliance (%)', 'Patient falls per 1000 patient-day
 
 // One register per support service; each collection is hospital-scoped and audited (firestore.rules suite()).
 export const SERVICES = {
+  coverage: {
+    collection: 'insuranceCovers', title: 'Insurance Coverage', desc: 'Every patient\'s cover in one place: private and corporate health insurance, government schemes (PM-JAY, CGHS, ECHS, ESIC, state schemes) and life policies (hospital cash, critical illness, accident, death benefit), with sum insured, balance and validity.',
+    statuses: ['Active', 'Verification pending', 'Exhausted', 'Expired'], columns: ['patientName', 'coverType', 'insurer', 'policyNo', 'validTo'],
+    fields: [P, { k: 'coverType', label: 'Cover type', options: SCHEMES }, { k: 'insurer', label: 'Insurer / scheme authority', required: true }, { k: 'tpa', label: 'TPA' },
+      { k: 'policyNo', label: 'Policy / card no.', required: true }, { k: 'memberId', label: 'Member / beneficiary ID (PM-JAY ID, ABHA, UHID)' },
+      { k: 'policyHolder', label: 'Policy holder / employer' }, { k: 'relation', label: 'Patient is', options: ['Self', 'Spouse', 'Child', 'Parent', 'Employee', 'Dependant'] },
+      { k: 'sumInsured', label: 'Sum insured / family floater (₹)', type: 'number' }, { k: 'balance', label: 'Balance available (₹)', type: 'number' },
+      { k: 'roomLimit', label: 'Room rent limit (₹/day)', type: 'number' }, { k: 'copayPct', label: 'Co-pay %', type: 'number' },
+      { k: 'lifeBenefits', label: 'Life policy benefits', options: ['—', ...LIFE_BENEFITS] }, { k: 'nominee', label: 'Nominee (life policy)' },
+      { k: 'validFrom', label: 'Valid from', type: 'date' }, { k: 'validTo', label: 'Valid till', type: 'date' },
+      { k: 'docsVerified', label: 'Card / KYC documents verified', type: 'checkbox' }, { k: 'notes', label: 'Exclusions / waiting periods / notes', type: 'textarea' }],
+    extraStats: (rows) => [['Life policies', rows.filter((r) => r.coverType === 'Life insurance').length], ['Government schemes', rows.filter((r) => /PM-JAY|CGHS|ECHS|ESIC|State/.test(r.coverType)).length]],
+    alerts: (rows) => [
+      ...rows.filter((r) => r.status === 'Active' && r.validTo && r.validTo < todayYmd()).map((r) => `${r.patientName}: ${r.insurer} ${r.policyNo} expired on ${r.validTo}`),
+      ...rows.filter((r) => r.status === 'Active' && r.validTo >= todayYmd() && r.validTo <= soon(30)).map((r) => `${r.patientName}: ${r.insurer} ${r.policyNo} expires ${r.validTo}`),
+      ...rows.filter((r) => r.status === 'Active' && r.sumInsured > 0 && Number(r.balance) < Number(r.sumInsured) * 0.1).map((r) => `${r.patientName}: less than 10% of the sum insured left (${r.insurer})`),
+    ],
+  },
   radiology: {
     collection: 'radiologyOrders', title: 'Radiology & Imaging', desc: 'Imaging orders (X-ray, CT, MRI, ultrasound, ECG, echo), scan status, structured reports with findings and impression, verified reports visible to the patient.',
-    statuses: ['Ordered', 'Scanned', 'Reported', 'Verified', 'Cancelled'], columns: ['patientName', 'modality', 'study', 'priority', 'doctor'],
+    statuses: ['Ordered', 'Scanned', 'Reported', 'Verified', 'Cancelled'],
     fields: [P, { k: 'modality', label: 'Modality', options: ['X-ray', 'CT', 'MRI', 'Ultrasound', 'Mammography', 'Doppler', 'ECG', 'Echo', 'DEXA', 'Fluoroscopy'] },
       { k: 'study', label: 'Study / part', required: true }, { k: 'priority', label: 'Priority', options: ['Routine', 'Urgent', 'STAT'] }, { k: 'doctor', label: 'Referring doctor' },
       { k: 'contrast', label: 'With contrast', type: 'checkbox' }, { k: 'clinical', label: 'Clinical history', full: true },
-      { k: 'findings', label: 'Findings', type: 'textarea' }, { k: 'impression', label: 'Impression', type: 'textarea' }, { k: 'radiologist', label: 'Reported by' }, { k: 'date', label: 'Date', type: 'date' }],
+      { k: 'findings', label: 'Findings', type: 'textarea' }, { k: 'impression', label: 'Impression', type: 'textarea' }, { k: 'radiologist', label: 'Reported by' }, { k: 'date', label: 'Date', type: 'date' },
+      { k: 'accessionNo', label: 'PACS accession no.' }, { k: 'studyUid', label: 'DICOM Study Instance UID' }, { k: 'imagesUrl', label: 'Images link (PACS / DICOM viewer URL)', full: true }],
+    columns: ['patientName', 'modality', 'study', 'priority', 'imagesUrl'],
     alerts: (rows) => rows.filter((r) => r.contrast && r.status === 'Ordered').map((r) => `${r.patientName}: contrast study — check creatinine, allergy and metformin before the scan.`),
   },
   bloodbank: {

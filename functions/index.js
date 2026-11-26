@@ -11,6 +11,7 @@ import { defineSecret, defineString } from 'firebase-functions/params';
 import { logger, setGlobalOptions } from 'firebase-functions/v2';
 import { generateToken04 } from './zego.js';
 import { bookingTemplate, sendWhatsApp } from './whatsapp.js';
+import { bookingSms, sendSms, DEFAULT_SMS_TEMPLATE } from './sms.js';
 
 initializeApp();
 const db = getFirestore();
@@ -22,6 +23,11 @@ const WHATSAPP_TOKEN = defineSecret('WHATSAPP_TOKEN');
 const WHATSAPP_PHONE_NUMBER_ID = defineString('WHATSAPP_PHONE_NUMBER_ID', { default: '' });
 const WHATSAPP_TEMPLATE = defineString('WHATSAPP_TEMPLATE', { default: 'appointment_confirmation' });
 const WHATSAPP_API_VERSION = defineString('WHATSAPP_API_VERSION', { default: '' });
+// SMS fallback (Twilio): DLT-registered sender (or Messaging Service SID "MG…") and the exact DLT template text.
+const TWILIO_AUTH_TOKEN = defineSecret('TWILIO_AUTH_TOKEN');
+const TWILIO_ACCOUNT_SID = defineString('TWILIO_ACCOUNT_SID', { default: '' });
+const SMS_FROM = defineString('SMS_FROM', { default: '' });
+const SMS_TEMPLATE = defineString('SMS_TEMPLATE', { default: DEFAULT_SMS_TEMPLATE });
 
 const CLINICAL = ['admin', 'hospital_admin', 'doctor', 'nurse', 'receptionist', 'lab_tech'];
 const STAFF_ROLES = ['hospital_admin', 'doctor', 'nurse', 'receptionist', 'lab_tech', 'billing', 'pharmacist', 'admin_staff'];
@@ -61,7 +67,7 @@ export const zegoToken = onCall({ secrets: [ZEGO_SERVER_SECRET], enforceAppCheck
  * On every appointment write: give online consultations an unguessable callKey for the patient link,
  * and send the WhatsApp booking confirmation (token number) once, when configured.
  */
-export const onAppointmentWrite = onDocumentWritten({ document: 'appointments/{id}', secrets: [WHATSAPP_TOKEN] }, async (event) => {
+export const onAppointmentWrite = onDocumentWritten({ document: 'appointments/{id}', secrets: [WHATSAPP_TOKEN, TWILIO_AUTH_TOKEN] }, async (event) => {
   const after = event.data?.after;
   if (!after?.exists) return;
   const apt = after.data();
@@ -83,6 +89,20 @@ export const onAppointmentWrite = onDocumentWritten({ document: 'appointments/{i
       }
     }
   }
+  // SMS when WhatsApp is not set up (or failed), once per booking.
+  const smsReady = TWILIO_ACCOUNT_SID.value() && SMS_FROM.value() && TWILIO_AUTH_TOKEN.value();
+  if (smsReady && apt.token && !apt.smsSentAt && !updates.whatsappSentAt && !apt.whatsappSentAt && ['Confirmed', 'Rescheduled'].includes(apt.status)) {
+    const msg = bookingSms(apt, SMS_TEMPLATE.value());
+    if (msg) {
+      try {
+        updates.smsSid = await sendSms(msg, { accountSid: TWILIO_ACCOUNT_SID.value(), authToken: TWILIO_AUTH_TOKEN.value(), from: SMS_FROM.value() });
+        updates.smsSentAt = FieldValue.serverTimestamp();
+      } catch (e) {
+        logger.error('sms send failed', { id: event.params.id, error: e.message });
+        updates.smsError = e.message;
+      }
+    }
+  }
   if (Object.keys(updates).length) await after.ref.update(updates);
 });
 
@@ -92,7 +112,6 @@ import { turn } from './voiceAgent.js';
 import { makeCtx } from './voiceCtx.js';
 import { toTwiml, validTwilioRequest } from './twiml.js';
 
-const TWILIO_AUTH_TOKEN = defineSecret('TWILIO_AUTH_TOKEN');
 // The exact public URL configured on the Twilio number (Twilio signs it); also used as the Gather action.
 const VOICE_WEBHOOK_URL = defineString('VOICE_WEBHOOK_URL', { default: '' });
 const RECEPTION_NUMBER = defineString('RECEPTION_NUMBER', { default: '' });
@@ -283,7 +302,67 @@ const SUITE_AUDIT = {
   storeItems: 'Stores', purchaseOrders: 'Stores', vendors: 'Stores', indents: 'Stores', expenses: 'Accounts', dayClosings: 'Accounts',
   bloodUnits: 'Blood Bank', ambulanceTrips: 'Ambulance', housekeeping: 'Support Services', dietOrders: 'Support Services',
   cssdBatches: 'Support Services', laundry: 'Support Services', visitors: 'Front Office', vaccinations: 'Clinical',
-  feedback: 'Quality', incidents: 'Quality', qualityIndicators: 'Quality',
+  feedback: 'Quality', incidents: 'Quality', qualityIndicators: 'Quality', insuranceCovers: 'Insurance',
 };
 export const suiteAudit = Object.fromEntries(Object.entries(SUITE_AUDIT)
   .map(([c, module]) => [c, onDocumentWritten(`${c}/{id}`, (e) => trail(e, module))]));
+
+// ---------------------------------------------------------------- lab analysers (HL7 v2)
+import { createHash, timingSafeEqual } from 'node:crypto';
+import { ack, applyResults, oruResults } from './hl7.js';
+
+// Keep in sync with labFlag in src/clinical.js.
+function labFlag(value, t) {
+  const x = Number(value);
+  if (value === '' || Number.isNaN(x) || (t.low === undefined && t.high === undefined)) return '';
+  if (t.critLow !== undefined && x < t.critLow) return 'LL';
+  if (t.critHigh !== undefined && x > t.critHigh) return 'HH';
+  if (t.low !== undefined && x < t.low) return 'L';
+  if (t.high !== undefined && x > t.high) return 'H';
+  return '';
+}
+const sha = (s) => createHash('sha256').update(s).digest();
+
+/** Hospital admin: new analyser key (shown once). integrationKeys/{hospitalId} is server-only (no client rule). */
+export const rotateLabKey = onCall(async (req) => {
+  const hospitalId = String(req.data?.hospitalId ?? '');
+  if (!req.auth || !(await staffOf(req.auth.uid, hospitalId, ['admin', 'hospital_admin']))) throw new HttpsError('permission-denied', 'Only this hospital\'s admin can create the key');
+  const key = randomBytes(24).toString('base64url');
+  await db.doc(`integrationKeys/${hospitalId}`).set({ labKeyHash: sha(key).toString('hex'), labKeyAt: FieldValue.serverTimestamp(), labKeyBy: req.auth.uid }, { merge: true });
+  return { key: `${hospitalId}.${key}` };
+});
+
+/**
+ * Analyser results in: POST HL7 v2 ORU^R01 (text body) with header X-Lab-Key: <hospitalId>.<key>.
+ * Fills the matching lab order (by sample id), sets it to Resulted for verification, replies with an HL7 ACK.
+ */
+export const labResults = onRequest({ cors: false }, async (req, res) => {
+  const reply = (code, controlId, text, status = 200) => res.status(status).type('text/plain').send(ack(controlId, code, text));
+  if (req.method !== 'POST') return res.status(405).send('POST HL7 ORU^R01');
+  const [hospitalId, key] = String(req.get('X-Lab-Key') ?? '').split('.');
+  const stored = hospitalId && key ? (await db.doc(`integrationKeys/${hospitalId}`).get()).data()?.labKeyHash : null;
+  if (!stored || !timingSafeEqual(Buffer.from(stored, 'hex'), sha(key))) return res.status(401).send('Bad X-Lab-Key');
+  let msgs;
+  try {
+    msgs = oruResults(typeof req.body === 'string' ? req.body : req.rawBody?.toString('utf8'));
+  } catch (e) {
+    return reply('AR', '', e.message, 400);
+  }
+  const notes = [];
+  for (const m of msgs) {
+    const q = await db.collection('labOrders').where('hospitalId', '==', hospitalId).where('sampleId', '==', m.sampleId).limit(1).get();
+    const order = q.docs[0];
+    if (!order) { notes.push(`No order for sample ${m.sampleId}`); continue; }
+    const o = order.data();
+    if (['Verified', 'Cancelled'].includes(o.status)) { notes.push(`${m.sampleId} is ${o.status}`); continue; }
+    const r = applyResults(o.tests, m.results, labFlag);
+    const at = new Date(Date.now() + 5.5 * 3_600_000).toISOString().slice(0, 16).replace('T', ' '); // IST, like the portal
+    await order.ref.update({
+      tests: r.tests, status: r.tests.every((t) => t.value !== '') ? 'Resulted' : o.status, resultedAt: o.resultedAt ?? at,
+      critical: r.tests.some((t) => t.flag === 'LL' || t.flag === 'HH'), resultSource: 'Analyser', updatedBy: 'system-analyser',
+    });
+    if (r.unmatched.length) notes.push(`${m.sampleId}: not on order ${r.unmatched.join(', ')}`);
+  }
+  logger.info('lab results', { hospitalId, samples: msgs.map((m) => m.sampleId), notes });
+  return notes.some((n) => n.startsWith('No order') || n.includes(' is ')) ? reply('AE', msgs[0]?.controlId ?? '', notes.join('; ')) : reply('AA', msgs[0]?.controlId ?? '', notes.join('; '));
+});

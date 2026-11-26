@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { Plus, Lock, Download } from 'lucide-react';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, getDoc, getDocs, limit, where } from 'firebase/firestore';
 import { db, tenant } from '../../firebase';
-import { collectionReport, todayYmd } from '../../hms';
+import { collectionReport, scoped, todayYmd } from '../../hms';
+import { DEFAULT_LEDGERS, ledgersUsed, tallyXml } from '../../tally';
 import { Modal, Tabs, inr } from '../hms/common';
 import { Empty, Fields, Page, Stats, badgeFor, downloadCsv, fresh, upsert, useSuite } from './kit';
 
@@ -24,6 +25,22 @@ export default function Accounts() {
   const [closing, setClosing] = useState(null);
   const [form, setForm] = useState(null);
   const [error, setError] = useState('');
+  const [tally, setTally] = useState({ from: todayYmd().slice(0, 8) + '01', to: todayYmd(), company: tenant.hospital?.name ?? '', result: null });
+
+  // ponytail: up to 5000 invoices / receipts per export; export month by month for bigger hospitals.
+  const exportTally = async () => {
+    setError('');
+    try {
+      const range = [where('date', '>=', tally.from), where('date', '<=', tally.to), limit(5000)];
+      const [inv, rec] = await Promise.all([getDocs(scoped('invoices', ...range)), getDocs(scoped('receipts', ...range))]);
+      const data = { invoices: inv.docs.map((d) => d.data()), receipts: rec.docs.map((d) => d.data()),
+        expenses: expenses.filter((e) => (e.paidOn ?? e.date) >= tally.from && (e.paidOn ?? e.date) <= tally.to) };
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([tallyXml(data, tally.company)], { type: 'application/xml' }));
+      a.download = `tally-${tally.from}-to-${tally.to}.xml`; a.click(); URL.revokeObjectURL(a.href);
+      setTally({ ...tally, result: { n: data.invoices.length + data.receipts.length + data.expenses.length, ledgers: ledgersUsed(data) } });
+    } catch (e) { setError(e.message); }
+  };
 
   useEffect(() => {
     setDayRep(null); setClosing(null);
@@ -52,7 +69,7 @@ export default function Accounts() {
     <Page title="Accounts & Finance" desc="Day-end closing of cash, UPI and card against receipts, expenses register, and monthly income versus expenditure with a GST summary."
       actions={<button className="btn btn-primary" onClick={() => setForm({ date: todayYmd(), head: HEADS[0], mode: 'Cash', status: 'Paid', amount: '', gst: 0 })}><Plus size={16} /> Add expense</button>}>
       {error && <div className="card" style={{ borderLeft: '4px solid var(--danger)', marginBottom: 12 }}>{error}</div>}
-      <Tabs tabs={['Day-end closing', 'Expenses', 'Profit & loss']} value={tab} onChange={setTab} />
+      <Tabs tabs={['Day-end closing', 'Expenses', 'Profit & loss', 'Tally export']} value={tab} onChange={setTab} />
 
       {tab === 'Day-end closing' && <>
         <div className="form-input-row" style={{ marginBottom: 12 }}><input className="form-input" type="date" aria-label="Closing date" value={day} onChange={(e) => setDay(e.target.value)} style={{ maxWidth: 180 }} /></div>
@@ -84,6 +101,18 @@ export default function Accounts() {
                 : <button className="btn btn-secondary" onClick={() => setForm(e)}>Edit</button>}</td></tr>
           ))}{!expenses.length && <Empty cols={8} />}</tbody>
         </table></div>
+      </div>}
+
+      {tab === 'Tally export' && <div className="card">
+        <p>Download invoices (Sales), receipts and refunds (Receipt / Payment) and paid expenses (Payment) as a Tally XML file. In Tally Prime: <b>Import › Vouchers</b>, pick the file. Create the ledgers listed below in the company once before the first import (debtor ledger under Sundry Debtors, GST ledgers under Duties &amp; Taxes, banks under Bank Accounts).</p>
+        <div className="form-input-row" style={{ alignItems: 'flex-end' }}>
+          <div className="form-group"><label>From</label><input className="form-input" type="date" aria-label="Export from" value={tally.from} onChange={(e) => setTally({ ...tally, from: e.target.value })} /></div>
+          <div className="form-group"><label>To</label><input className="form-input" type="date" aria-label="Export to" value={tally.to} onChange={(e) => setTally({ ...tally, to: e.target.value })} /></div>
+          <div className="form-group" style={{ flex: 1 }}><label>Tally company name (exactly as in Tally)</label><input className="form-input" aria-label="Tally company" value={tally.company} onChange={(e) => setTally({ ...tally, company: e.target.value })} /></div>
+          <button className="btn btn-primary" disabled={!tally.company || tally.to < tally.from} onClick={exportTally}><Download size={14} /> Download Tally XML</button>
+        </div>
+        {tally.result && <p>{tally.result.n} entries exported. Ledgers used: <b>{tally.result.ledgers.join(', ')}</b></p>}
+        <small style={{ color: 'var(--text-muted)' }}>Default ledger names: {[DEFAULT_LEDGERS.debtors, ...Object.values(DEFAULT_LEDGERS.income), DEFAULT_LEDGERS.cgst, DEFAULT_LEDGERS.sgst, DEFAULT_LEDGERS.inputGst, DEFAULT_LEDGERS.roundOff, ...new Set(Object.values(DEFAULT_LEDGERS.modes))].join(', ')}; expense heads become expense ledgers. Try the first import on a copy of the company.</small>
       </div>}
 
       {tab === 'Profit & loss' && <>

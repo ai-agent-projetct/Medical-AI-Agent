@@ -1,9 +1,10 @@
 import React, { useMemo, useState } from 'react';
-import { Plus, FlaskConical, Printer, MessageCircle, CheckCircle2, Receipt } from 'lucide-react';
+import { Plus, FlaskConical, Printer, MessageCircle, CheckCircle2, Receipt, Cable } from 'lucide-react';
+import { httpsCallable } from 'firebase/functions';
 import { getDocs, limit, query, where } from 'firebase/firestore';
 import { LAB_PANELS, LAB_TESTS, labFlag } from '../../clinical';
 import { addCharge, col, createInvoice, todayYmd } from '../../hms';
-import { tenant } from '../../firebase';
+import { functions, tenant } from '../../firebase';
 import { Modal, PatientPicker, Tabs, inr } from '../hms/common';
 import { Alerts, Empty, Page, Stats, badgeFor, esc, fresh, nowHm, printPage, useSuite } from './kit';
 
@@ -28,13 +29,20 @@ export function reportHtml(o) {
 }
 
 /** Laboratory (LIS): orders and panels, sample collection, result entry with auto flags, delta check, verification, reports, billing. */
-export default function Lab({ doctors = [] }) {
+export default function Lab({ doctors = [], isAdmin = false }) {
   const [orders, setOrders] = useSuite('labOrders', 800);
   const [tab, setTab] = useState('Ordered');
   const [form, setForm] = useState(null);
   const [entry, setEntry] = useState(null);
   const [error, setError] = useState('');
+  const [iface, setIface] = useState(null);
   const today = todayYmd();
+  const projectId = functions?.app?.options?.projectId ?? '<project>';
+  const endpoint = import.meta.env.MODE === 'emulator' ? `http://127.0.0.1:5001/${projectId}/asia-south1/labResults` : `https://asia-south1-${projectId}.cloudfunctions.net/labResults`;
+  const newKey = async () => {
+    if (!window.confirm('Create a new analyser key? The old key stops working immediately.')) return;
+    try { setIface({ key: (await httpsCallable(functions, 'rotateLabKey')({ hospitalId: tenant.hospitalId })).data.key }); } catch (e) { setIface({ error: e.message }); }
+  };
 
   const todays = orders.filter((o) => o.date === today && o.status !== 'Cancelled');
   const tats = todays.map((o) => mins(o.orderedAt, o.verifiedAt)).filter((m) => m !== null);
@@ -108,7 +116,7 @@ export default function Lab({ doctors = [] }) {
 
   return (
     <Page title="Laboratory (LIS)" desc="Test orders, sample collection with labels, result entry with automatic high / low / critical flags, delta check against the last result, verification, reports and billing."
-      actions={<button className="btn btn-primary" onClick={() => setForm({ patient: null, age: '', doctor: doctors[0]?.name ?? '', priority: 'Routine', codes: [] })}><Plus size={16} /> New lab order</button>}>
+      actions={<><button className="btn btn-secondary" onClick={() => setIface({})}><Cable size={16} /> Analyser interface</button><button className="btn btn-primary" onClick={() => setForm({ patient: null, age: '', doctor: doctors[0]?.name ?? '', priority: 'Routine', codes: [] })}><Plus size={16} /> New lab order</button></>}>
       <Stats items={[
         ['Orders today', todays.length],
         ['Pending (all)', orders.filter((o) => ['Ordered', 'Collected', 'Resulted'].includes(o.status)).length, 'warning'],
@@ -133,7 +141,7 @@ export default function Lab({ doctors = [] }) {
                   <td><small>{o.tests.map((t) => <span key={t.code} style={{ color: t.flag ? 'var(--danger)' : undefined, marginRight: 6 }}>{t.code}{t.flag && `(${t.flag})`}</span>)}</small></td>
                   <td><span className={`badge ${o.priority === 'STAT' ? 'badge-danger' : o.priority === 'Urgent' ? 'badge-warning' : 'badge-secondary'}`}>{o.priority}</span></td>
                   <td>{o.doctor}</td>
-                  <td><span className={`badge ${badgeFor(o.status)}`}>{o.status}</span>{o.critical && <span className="badge badge-danger" style={{ marginLeft: 4 }}>Critical</span>}</td>
+                  <td><span className={`badge ${badgeFor(o.status)}`}>{o.status}</span>{o.resultSource === 'Analyser' && <span className="badge badge-secondary" style={{ marginLeft: 4 }}>Analyser</span>}{o.critical && <span className="badge badge-danger" style={{ marginLeft: 4 }}>Critical</span>}</td>
                   <td style={{ whiteSpace: 'nowrap' }}>
                     {o.status === 'Ordered' && <><button className="btn btn-primary" onClick={() => { update(o, { status: 'Collected', collectedAt: stamp() }); label({ ...o, collectedAt: stamp() }); }}><FlaskConical size={14} /> Collect</button>{' '}
                       <button className="btn btn-secondary" onClick={() => window.confirm('Cancel this order?') && update(o, { status: 'Cancelled' })}>Cancel</button></>}
@@ -151,6 +159,17 @@ export default function Lab({ doctors = [] }) {
           </table>
         </div>
       </div>
+
+      {iface && (
+        <Modal wide title="Analyser interface (HL7 v2)" onClose={() => setIface(null)} footer={isAdmin && <button className="btn btn-primary" onClick={newKey}>Generate analyser key</button>}>
+          <p>Analysers send results through their LIS port to an interface engine on the hospital network (for example Mirth Connect or the vendor's middleware). The engine forwards each <b>ORU^R01</b> message here:</p>
+          <pre style={{ whiteSpace: 'pre-wrap', background: 'var(--bg-secondary, #f3f4f6)', padding: 8 }}>POST {endpoint}{'\n'}Header  X-Lab-Key: &lt;key&gt;{'\n'}Body    the HL7 message (text)</pre>
+          <p>Results are matched by the <b>sample id</b> on the tube label (OBR-2 or OBR-3) and the test code (OBX-3, e.g. HB, WBC, CREAT), then wait for verification here. The reply is an HL7 ACK (AA accepted, AE with the reason).</p>
+          {iface.key && <p style={{ color: 'var(--danger)' }}>New key (shown once, give it only to the interface engine): <code style={{ wordBreak: 'break-all' }}>{iface.key}</code></p>}
+          {iface.error && <p style={{ color: 'var(--danger)' }}>{iface.error}</p>}
+          {!isAdmin && <small>Only the hospital admin can generate the key.</small>}
+        </Modal>
+      )}
 
       {form && (
         <Modal wide title="New lab order" onClose={() => setForm(null)} footer={<button className="btn btn-primary" onClick={create}>Create order · {inr(form.codes.reduce((s, c) => s + (LAB_TESTS.find((t) => t.code === c)?.rate ?? 0), 0))}</button>}>

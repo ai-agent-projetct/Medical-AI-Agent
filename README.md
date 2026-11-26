@@ -114,6 +114,20 @@ These collections share one rule in `firestore.rules`. `suite()` maps each colle
 read it and write it. Patients can read their own verified reports, vitals and vaccinations. The
 `suiteAudit-*` functions write every change to the audit trail.
 
+### Integrations
+
+| Integration | What is built | What the hospital / you must set up |
+|---|---|---|
+| **Insurance coverage** | Register of each patient's cover: private, corporate, PM-JAY, CGHS, ECHS, ESIC, state schemes, life insurance (sum insured, balance, validity, expiry alerts). Claims carry scheme, HBP package code, TMS case no., life benefit type. | — |
+| **PM-JAY** | Cases tracked as claims with beneficiary ID, package code and TMS case number. | Each hospital is empanelled by its State Health Agency; pre-auth and claims are filed in NHA's TMS portal. |
+| **ABDM / ABHA** | ABHA number / address captured and validated on Patient 360. | Register the software on the ABDM sandbox (HIE-CM: sandbox.nha.gov.in). Creating and verifying ABHA through the API is built after the client ID, secret and API docs are issued. |
+| **SMS (DLT)** | Booking confirmation by Twilio SMS when WhatsApp is not configured (`functions/sms.js`). | DLT registration (entity, sender ID, template) on an operator DLT portal. Set `TWILIO_ACCOUNT_SID`, `SMS_FROM` (sender or `MG…` Messaging Service), `SMS_TEMPLATE` (the exact registered text, placeholders `{patient} {doctor} {date} {time} {token} {hospital}`) and the `TWILIO_AUTH_TOKEN` secret. |
+| **Tally** | Accounts → Tally export: Sales, Receipt and Payment vouchers as Tally XML (`src/tally.js`). | Create the listed ledgers in the Tally company once, then Import › Vouchers. |
+| **Lab analysers** | `labResults` endpoint takes HL7 v2 ORU^R01 and fills the order by sample id (`functions/hl7.js`); key from Lab → Analyser interface. Test: `node scripts/lab-interface-test.mjs`. | An interface engine (e.g. Mirth Connect) or the analyser vendor's middleware forwards results over HTTPS with the `X-Lab-Key` header. |
+| **PACS** | Radiology orders store accession no., DICOM Study UID and an images link (opens the PACS / DICOM viewer). | PACS / viewer from the hospital's vendor. |
+
+Run `npm run test:rules` on its own emulators: running `tests/rules.test.mjs` against the demo emulators clears their data.
+
 Both apps share appointments (token numbers, 30-min slots from each doctor's schedule), patient **medical records**
 (consultation notes, vitals, prescriptions, lab-report uploads) and **ZegoCloud video consultations**. The video
 room ID is the appointment ID. The patient joins at `<portal>/#/call/<appointmentId>` (no account needed),

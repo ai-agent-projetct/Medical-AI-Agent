@@ -120,14 +120,14 @@ const PLATFORM_TABS = ['platform', 'audit', 'support', 'privacy', 'health'];
 const SUITE_CLINICAL = ['command', 'patient360', 'doctor-insights', 'er', 'nursing', 'lab', 'radiology', 'ot', 'bloodbank', 'vaccination', 'queue'];
 const SUITE_OPS = ['hrms', 'stores', 'accounts', 'ambulance', 'diet', 'housekeeping', 'cssd', 'laundry', 'visitors', 'feedback', 'incidents', 'quality'];
 const SUITE_TABS = {
-  'Super Admin': [...SUITE_CLINICAL, ...SUITE_OPS],
-  'Hospital Admin': [...SUITE_CLINICAL, ...SUITE_OPS],
+  'Super Admin': [...SUITE_CLINICAL, ...SUITE_OPS, 'coverage'],
+  'Hospital Admin': [...SUITE_CLINICAL, ...SUITE_OPS, 'coverage'],
   'Doctor': ['patient360', 'doctor-insights', 'er', 'nursing', 'lab', 'radiology', 'ot', 'bloodbank', 'vaccination', 'queue', 'incidents'],
   'Nurse': ['patient360', 'er', 'nursing', 'lab', 'radiology', 'ot', 'bloodbank', 'vaccination', 'queue', 'diet', 'housekeeping', 'cssd', 'visitors', 'incidents'],
   'Lab Technician': ['patient360', 'lab', 'radiology', 'bloodbank', 'incidents'],
-  'Receptionist': ['patient360', 'er', 'lab', 'radiology', 'queue', 'vaccination', 'ambulance', 'visitors', 'feedback', 'incidents'],
+  'Receptionist': ['coverage', 'patient360', 'er', 'lab', 'radiology', 'queue', 'vaccination', 'ambulance', 'visitors', 'feedback', 'incidents'],
   'Pharmacist': ['stores', 'incidents'],
-  'Billing Staff': ['patient360', 'lab', 'accounts', 'incidents'],
+  'Billing Staff': ['coverage', 'patient360', 'lab', 'accounts', 'incidents'],
   'Administration': ['command', 'hrms', 'stores', 'ambulance', 'diet', 'housekeeping', 'cssd', 'laundry', 'visitors', 'feedback', 'incidents', 'quality'],
 };
 const BASE_PERMISSIONS = {
@@ -150,7 +150,7 @@ const MODULE_OF = {
   'hms-tariff': 'billing', 'hms-reports': 'billing', voice: 'voice', ivr: 'voice', agentic: 'voice', assets: 'assets',
   online: 'telehealth', scribe: 'ai', freed: 'ai', printer: 'ai', futuristic: 'ai',
   er: 'clinical', nursing: 'clinical', lab: 'clinical', radiology: 'clinical', ot: 'clinical', bloodbank: 'clinical', vaccination: 'clinical',
-  hrms: 'hrms', stores: 'erp', accounts: 'erp', ambulance: 'erp', diet: 'erp', housekeeping: 'erp', cssd: 'erp', laundry: 'erp',
+  coverage: 'billing', hrms: 'hrms', stores: 'erp', accounts: 'erp', ambulance: 'erp', diet: 'erp', housekeeping: 'erp', cssd: 'erp', laundry: 'erp',
   visitors: 'erp', feedback: 'erp', incidents: 'erp', quality: 'erp',
 };
 const hasModule = (key) => !firebaseEnabled || !tenant.hospital?.modules || !MODULE_OF[key] || tenant.hospital.modules.includes(MODULE_OF[key]);
@@ -353,6 +353,7 @@ function Portal({ initialRole, canSwitchRole, isSuper }) {
     { key: 'hms-pos', label: 'Pharmacy POS', icon: <Pill size={18} />, section: 'hms' },
     { key: 'hms-pharmacy', label: 'Pharmacy Inventory', icon: <Layers size={18} />, section: 'hms' },
     { key: 'hms-ipd', label: 'In-Patient (IPD) & Beds', icon: <HeartPulse size={18} />, section: 'hms' },
+    { key: 'coverage', label: 'Insurance Coverage', icon: <ShieldCheck size={18} />, section: 'hms' },
     { key: 'hms-claims', label: 'Insurance & TPA Claims', icon: <ShieldCheck size={18} />, section: 'hms' },
     { key: 'hms-tariff', label: 'Charge Master (Tariff)', icon: <FileText size={18} />, section: 'hms' },
     { key: 'hms-reports', label: 'Billing Reports', icon: <TrendingUp size={18} />, section: 'hms' },
@@ -841,13 +842,13 @@ function Portal({ initialRole, canSwitchRole, isSuper }) {
                 {activeTab === 'doctor-insights' && <DoctorInsights doctors={doctors} openPatient={(p) => { setOpenPatient(p); setActiveTab('patient360'); }} />}
                 {activeTab === 'er' && <Emergency doctors={doctors} />}
                 {activeTab === 'nursing' && <Nursing />}
-                {activeTab === 'lab' && <Lab doctors={doctors} />}
+                {activeTab === 'lab' && <Lab doctors={doctors} isAdmin={isHmsAdmin} />}
                 {activeTab === 'ot' && <OT doctors={doctors} />}
                 {activeTab === 'queue' && <QueueBoard />}
                 {activeTab === 'hrms' && <Hrms />}
                 {activeTab === 'stores' && <Stores canEdit={!['Doctor', 'Nurse', 'Receptionist', 'Lab Technician', 'Billing Staff'].includes(currentRole)} />}
                 {activeTab === 'accounts' && <Accounts />}
-                {['radiology', 'bloodbank', 'vaccination', 'ambulance', 'diet', 'housekeeping', 'cssd', 'laundry', 'visitors', 'feedback', 'incidents', 'quality'].includes(activeTab) && <Services module={activeTab} />}
+                {['coverage', 'radiology', 'bloodbank', 'vaccination', 'ambulance', 'diet', 'housekeeping', 'cssd', 'laundry', 'visitors', 'feedback', 'incidents', 'quality'].includes(activeTab) && <Services module={activeTab} />}
               </Suspense>
               {activeTab === 'assets' && <Equipment canEdit={['Super Admin', 'Hospital Admin', 'Administration'].includes(currentRole)} />}
               {activeTab === 'audit' && (

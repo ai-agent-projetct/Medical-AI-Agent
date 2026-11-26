@@ -270,13 +270,13 @@ service cloud.firestore {
         'bloodUnits': {'r': s, 'w': clin}, 'ambulanceTrips': {'r': s, 'w': s}, 'housekeeping': {'r': s, 'w': s},
         'dietOrders': {'r': s, 'w': s}, 'cssdBatches': {'r': s, 'w': s}, 'laundry': {'r': s, 'w': s}, 'visitors': {'r': s, 'w': s},
         'vaccinations': {'r': clin, 'w': clin}, 'feedback': {'r': s, 'w': s}, 'incidents': {'r': s, 'w': s},
-        'qualityIndicators': {'r': s, 'w': ASSETS()}, 'queueDisplays': {'r': s, 'w': clin}
+        'qualityIndicators': {'r': s, 'w': ASSETS()}, 'queueDisplays': {'r': s, 'w': clin}, 'insuranceCovers': {'r': s, 'w': BILLING()}
       };
     }
     // Patients (app) read their own verified reports and observations.
     function patientReadable(c) {
-      return c in ['labOrders', 'radiologyOrders', 'vitals', 'vaccinations'] && isPatient()
-        && (c in ['vitals', 'vaccinations'] || resource.data.get('status', '') == 'Verified')
+      return c in ['labOrders', 'radiologyOrders', 'vitals', 'vaccinations', 'insuranceCovers'] && isPatient()
+        && (c in ['vitals', 'vaccinations', 'insuranceCovers'] || resource.data.get('status', '') == 'Verified')
         && ownsPatient(resource.data.get('patientId', '-'));
     }
     match /{coll}/{id} {

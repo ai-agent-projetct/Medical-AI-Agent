@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Printer, Calendar, FlaskConical, HeartPulse, BedDouble, Receipt, Scissors, Siren, FileText, Syringe } from 'lucide-react';
-import { doc, getDoc, getDocs, limit, where } from 'firebase/firestore';
-import { db, watchRecords } from '../../firebase';
+import { ShieldCheck, Printer, Calendar, FlaskConical, HeartPulse, BedDouble, Receipt, Scissors, Siren, FileText, Syringe } from 'lucide-react';
+import { doc, getDoc, getDocs, limit, updateDoc, where } from 'firebase/firestore';
+import { db, tenant, watchRecords } from '../../firebase';
 import { ageOf, rxAlerts } from '../../clinical';
 import { scoped } from '../../hms';
 import { PatientPicker, Tabs, inr } from '../hms/common';
@@ -11,8 +11,12 @@ import { reportHtml } from './Lab';
 const SOURCES = {
   appointments: { icon: Calendar, label: 'Visit' }, labOrders: { icon: FlaskConical, label: 'Lab' }, vitals: { icon: HeartPulse, label: 'Vitals' },
   admissions: { icon: BedDouble, label: 'Admission' }, invoices: { icon: Receipt, label: 'Bill' }, surgeries: { icon: Scissors, label: 'Surgery' },
-  erVisits: { icon: Siren, label: 'Emergency' }, radiologyOrders: { icon: FileText, label: 'Imaging' }, vaccinations: { icon: Syringe, label: 'Vaccine' },
+  erVisits: { icon: Siren, label: 'Emergency' }, radiologyOrders: { icon: FileText, label: 'Imaging' }, vaccinations: { icon: Syringe, label: 'Vaccine' }, insuranceCovers: { icon: ShieldCheck, label: 'Coverage' },
 };
+// ABHA number: 14 digits (shown 12-3456-7890-1234); ABHA address: name@abdm (live) or name@sbx (sandbox).
+export const validAbhaNumber = (s) => /^\d{14}$/.test(String(s ?? '').replace(/[\s-]/g, ''));
+export const validAbhaAddress = (s) => /^[A-Za-z0-9][A-Za-z0-9._]{2,31}@(abdm|sbx)$/.test(String(s ?? '').trim());
+const fmtAbha = (s) => String(s).replace(/\D/g, '').replace(/^(\d{2})(\d{4})(\d{4})(\d{4})$/, '$1-$2-$3-$4');
 const when = (r) => r.date ?? (r.createdAt?.toDate ? r.createdAt.toDate().toLocaleDateString('en-CA') : '');
 
 /** Findings worth a doctor's attention, from the patient's own history (rules, not a diagnosis). */
@@ -47,6 +51,16 @@ export default function Patient360({ initial }) {
   const [data, setData] = useState(null);
   const [records, setRecords] = useState([]);
   const [tab, setTab] = useState('Timeline');
+  const [abha, setAbha] = useState(null);
+  const saveAbha = async () => {
+    if (abha.number && !validAbhaNumber(abha.number)) return setAbha({ ...abha, error: 'ABHA number has 14 digits' });
+    if (abha.address && !validAbhaAddress(abha.address)) return setAbha({ ...abha, error: 'ABHA address looks like name@abdm' });
+    try {
+      const data = { abhaNumber: abha.number ? fmtAbha(abha.number) : '', abhaAddress: abha.address.trim(), abhaVerified: false };
+      await updateDoc(doc(db, 'patients', patient.id), { ...data, updatedBy: tenant.uid });
+      setProfile({ ...profile, ...data }); setAbha(null);
+    } catch (e) { setAbha({ ...abha, error: e.message }); }
+  };
 
   useEffect(() => {
     setData(null); setProfile({}); setRecords([]);
@@ -86,6 +100,7 @@ export default function Patient360({ initial }) {
       case 'erVisits': return `${r.complaint} · ESI ${r.esi}${r.disposition ? ` → ${r.disposition}` : ''}`;
       case 'radiologyOrders': return `${r.modality ?? ''} ${r.study ?? ''}${r.impression ? ` · ${r.impression}` : ''}`;
       case 'vaccinations': return `${r.vaccine ?? ''} dose ${r.dose ?? ''}`;
+      case 'insuranceCovers': return `${r.coverType}: ${r.insurer} ${r.policyNo}${r.sumInsured ? ` · sum insured ₹${r.sumInsured}` : ''}${r.validTo ? ` · till ${r.validTo}` : ''}`;
       default: return `${r.title ?? r.type ?? 'Record'}${r.notes ? ` · ${r.notes}` : ''}`;
     }
   };
@@ -108,6 +123,15 @@ export default function Patient360({ initial }) {
           <div><h3 style={{ margin: 0 }}>{patient.name}</h3><small>{profile.gender} {ageOf(profile.dob) !== '' && `· ${ageOf(profile.dob)} y`} · {patient.phone} {profile.bloodGroup && `· ${profile.bloodGroup}`}</small></div>
           <div><small>Allergies</small><br /><b style={{ color: allergies.length ? 'var(--danger)' : undefined }}>{allergies.join(', ') || 'None recorded'}</b></div>
           {profile.conditions && <div><small>Conditions</small><br /><b>{profile.conditions}</b></div>}
+          <div><small>ABHA (health ID)</small><br />{profile.abhaNumber || profile.abhaAddress
+            ? <b>{[profile.abhaNumber, profile.abhaAddress].filter(Boolean).join(' · ')}</b>
+            : <span style={{ color: 'var(--text-muted)' }}>Not linked</span>}{' '}
+            {abha ? <span style={{ display: 'inline-flex', gap: 4, flexWrap: 'wrap' }}>
+              <input className="form-input" aria-label="ABHA number" placeholder="14-digit ABHA number" value={abha.number} onChange={(e) => setAbha({ ...abha, number: e.target.value, error: '' })} style={{ width: 170 }} />
+              <input className="form-input" aria-label="ABHA address" placeholder="name@abdm" value={abha.address} onChange={(e) => setAbha({ ...abha, address: e.target.value, error: '' })} style={{ width: 150 }} />
+              <button className="btn btn-primary" onClick={saveAbha}>Save</button>{abha.error && <small style={{ color: 'var(--danger)' }}>{abha.error}</small>}</span>
+              : <button className="btn btn-secondary" onClick={() => setAbha({ number: profile.abhaNumber ?? '', address: profile.abhaAddress ?? '' })}>{profile.abhaNumber ? 'Edit' : 'Add'}</button>}
+          </div>
           {profile.emergencyContactName && <div><small>Emergency contact</small><br />{profile.emergencyContactName} {profile.emergencyContactPhone}</div>}
         </div>
         <Stats items={[

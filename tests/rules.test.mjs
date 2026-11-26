@@ -542,6 +542,19 @@ describe('hospital suite (lab, nursing, ER, OT, HRMS, stores, accounts, services
     await assertSucceeds(getDocs(query(collection(fs('pat'), 'invoices'), where('patientId', '==', 'pat'))));
     await assertFails(updateDoc(doc(fs('pat'), 'invoices/i1'), { status: 'Cancelled' }));
   });
+  test('insurance coverage: billing desk writes, patient reads own cover, analyser keys are server-only', async () => {
+    await assertSucceeds(setDoc(doc(fs('recep'), 'insuranceCovers/c1'), by('recep', { patientId: 'pat', coverType: 'Life insurance', policyNo: 'LIC-1', status: 'Active', ...H1 })));
+    await assertFails(setDoc(doc(fs('nurse'), 'insuranceCovers/c2'), by('nurse', { patientId: 'pat', ...H1 })));
+    await assertSucceeds(getDoc(doc(fs('pat'), 'insuranceCovers/c1')));
+    await assertFails(getDoc(doc(fs('pat2'), 'insuranceCovers/c1')));
+    await env.withSecurityRulesDisabled((ctx) => setDoc(doc(ctx.firestore(), 'integrationKeys/h1'), { labKeyHash: 'x' }));
+    await assertFails(getDoc(doc(fs('admin'), 'integrationKeys/h1')));
+    await assertFails(setDoc(doc(fs('owner'), 'integrationKeys/h1'), { labKeyHash: 'y' }));
+  });
+  test('staff link a patient ABHA id (audited write)', async () => {
+    await assertSucceeds(updateDoc(doc(fs('recep'), 'patients/p1'), by('recep', { abhaNumber: '12-3456-7890-1234', abhaAddress: 'ravi@sbx' })));
+    await assertFails(updateDoc(doc(fs('recep2'), 'patients/p1'), by('recep2', { abhaNumber: '12-3456-7890-1234' })));
+  });
   test('collections outside the suite map are not opened by the wildcard rule', async () => {
     await assertFails(setDoc(doc(fs('admin'), 'randomStuff/z1'), by('admin', H1)));
     await assertFails(getDoc(doc(fs('pat'), 'employees/e1')));
