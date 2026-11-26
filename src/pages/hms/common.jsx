@@ -2,13 +2,15 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { X, Search, Printer, MessageCircle, Trash2 } from 'lucide-react';
 import { computeBill } from '../../billing';
 import { addPayment, cancelInvoice, invoiceWhatsApp, searchByKey, searchPatients } from '../../hms';
+import { tenant } from '../../firebase';
 
 const env = import.meta.env;
+// Invoice header: the current hospital's profile (hospitals/{id}), else the build-time defaults.
 export const HOSPITAL = {
-  name: env.VITE_HOSPITAL_NAME || 'ABC Hospital',
-  address: env.VITE_HOSPITAL_ADDRESS || '',
-  gstin: env.VITE_HOSPITAL_GSTIN || '',
-  phone: env.VITE_HOSPITAL_PHONE || '',
+  get name() { return tenant.hospital?.name || env.VITE_HOSPITAL_NAME || 'ABC Hospital'; },
+  get address() { return [tenant.hospital?.address, tenant.hospital?.city].filter(Boolean).join(', ') || env.VITE_HOSPITAL_ADDRESS || ''; },
+  get gstin() { return tenant.hospital?.gstin || env.VITE_HOSPITAL_GSTIN || ''; },
+  get phone() { return tenant.hospital?.phone || env.VITE_HOSPITAL_PHONE || ''; },
 };
 export const MODES = ['Cash', 'UPI', 'Card', 'Insurance'];
 export const inr = (n) => `₹${Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;

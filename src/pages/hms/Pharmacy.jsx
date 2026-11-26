@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { AlertTriangle, Package, Truck } from 'lucide-react';
 import { getDocs } from 'firebase/firestore';
-import { col, keyOf, limit, orderBy, query, saveDrug, savePurchase, saveSupplier, searchByKey, thisMonth, todayYmd, useQueryDocs, where } from '../../hms';
+import { col, keyOf, limit, orderBy, query, saveDrug, savePurchase, saveSupplier, searchByKey, thisMonth, todayYmd, useQueryDocs, where, scoped } from '../../hms';
 import { purchaseLinesFromCsv } from '../../csv';
 import { inr, Modal, SearchBox, Tabs } from './common';
 
@@ -16,7 +16,7 @@ async function linesFromFile(file) {
   const byKey = new Map();
   const keys = [...names].filter(Boolean);
   for (let i = 0; i < keys.length; i += 30) {
-    const snap = await getDocs(query(col('drugs'), where('nameKey', 'in', keys.slice(i, i + 30))));
+    const snap = await getDocs(scoped('drugs', where('nameKey', 'in', keys.slice(i, i + 30))));
     snap.docs.forEach((d) => byKey.set(d.data().nameKey, { id: d.id, name: d.data().name }));
   }
   return purchaseLinesFromCsv(text, (n) => byKey.get(keyOf(n)) ?? null);
@@ -33,13 +33,13 @@ export default function Pharmacy({ canEdit }) {
   const month = thisMonth();
 
   const stock = useQueryDocs(() => tab !== 'Stock' ? null : term
-    ? query(col('drugs'), orderBy('nameKey'), where('nameKey', '>=', term.toLowerCase()), where('nameKey', '<=', `${term.toLowerCase()}`), limit(50))
-    : query(col('drugs'), orderBy('nameKey'), limit(50)), [tab, term]);
+    ? scoped('drugs', orderBy('nameKey'), where('nameKey', '>=', term.toLowerCase()), where('nameKey', '<=', `${term.toLowerCase()}`), limit(50))
+    : scoped('drugs', orderBy('nameKey'), limit(50)), [tab, term]);
   const expiring = useQueryDocs(() => tab !== 'Alerts' ? null
-    : query(col('stockBatches'), where('expiry', '<=', addMonths(month, 3)), orderBy('expiry'), limit(300)), [tab]);
-  const low = useQueryDocs(() => tab !== 'Alerts' ? null : query(col('drugs'), orderBy('stock'), limit(200)), [tab]);
-  const suppliers = useQueryDocs(() => tab !== 'Suppliers' ? null : query(col('suppliers'), orderBy('nameKey'), limit(200)), [tab]);
-  const purchases = useQueryDocs(() => tab !== 'Purchases' ? null : query(col('purchases'), orderBy('createdAt', 'desc'), limit(50)), [tab]);
+    : scoped('stockBatches', where('expiry', '<=', addMonths(month, 3)), orderBy('expiry'), limit(300)), [tab]);
+  const low = useQueryDocs(() => tab !== 'Alerts' ? null : scoped('drugs', orderBy('stock'), limit(200)), [tab]);
+  const suppliers = useQueryDocs(() => tab !== 'Suppliers' ? null : scoped('suppliers', orderBy('nameKey'), limit(200)), [tab]);
+  const purchases = useQueryDocs(() => tab !== 'Purchases' ? null : scoped('purchases', orderBy('createdAt', 'desc'), limit(50)), [tab]);
 
   const run = (fn, done) => fn().then(done, (e) => setError(e.message));
 

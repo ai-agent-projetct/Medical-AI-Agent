@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Search, Plus, Lock, Eye, History, X, Paperclip } from 'lucide-react';
-import { auth, db, firebaseEnabled, watchRecords, addRecord, searchPatients } from '../firebase';
+import { auth, db, firebaseEnabled, watchRecords, addRecord, searchPatients, scope } from '../firebase';
 import { collection, query, where, limit, onSnapshot } from 'firebase/firestore';
 
 export default function Patients({ 
@@ -76,7 +76,7 @@ export default function Patients({
   useEffect(() => {
     setHistory(null);
     if (!firebaseEnabled || !selectedPatient) return undefined;
-    return onSnapshot(query(collection(db, 'appointments'), where('patientId', '==', selectedPatient.id), limit(200)),
+    return onSnapshot(query(collection(db, 'appointments'), ...scope('appointments'), where('patientId', '==', selectedPatient.id), limit(200)),
       (snap) => setHistory(snap.docs.map(d => ({ ...d.data(), id: d.id })).sort((a, b) => b.date.localeCompare(a.date))),
       (err) => console.error('patient history', err));
   }, [selectedPatient?.id]);

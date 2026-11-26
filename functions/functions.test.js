@@ -57,3 +57,21 @@ test('withRetry retries ABORTED with backoff, not other errors', async () => {
   await assert.rejects(withRetry(async () => { m++; throw Object.assign(new Error('taken'), { code: 'SLOT_TAKEN' }); }), /taken/);
   assert.equal(m, 1);
 });
+
+test('audit trail: field diff, actor, ignores bookkeeping-only writes', async () => {
+  const { auditEntry } = await import('./audit.js');
+  const e = auditEntry(
+    { name: 'Ravi', status: 'Confirmed', updatedBy: 'a', hospitalId: 'h1' },
+    { name: 'Ravi', status: 'Checked In', updatedBy: 'recep', hospitalId: 'h1' },
+    'Appointments', 'appointments/x');
+  assert.equal(e.action, 'Updated');
+  assert.equal(e.uid, 'recep');
+  assert.equal(e.hospitalId, 'h1');
+  assert.deepEqual(e.changes, { status: { from: 'Confirmed', to: 'Checked In' } });
+  assert.ok(e.details.includes('status "Confirmed" → "Checked In"'));
+  assert.equal(auditEntry({ a: 1, updatedBy: 'x' }, { a: 1, updatedBy: 'y', callKey: 'k' }, 'M', 'c/d'), null);
+  assert.equal(auditEntry(undefined, { name: 'New', updatedBy: 'u1' }, 'Patients', 'patients/p').action, 'Created');
+  const del = auditEntry({ name: 'Old', updatedBy: 'u1' }, undefined, 'Patients', 'patients/p');
+  assert.equal(del.action, 'Deleted');
+  assert.equal(del.uid, 'unknown');
+});

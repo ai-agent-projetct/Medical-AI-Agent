@@ -87,6 +87,8 @@ class _UploadRecordScreenState extends State<UploadRecordScreen> {
   final _title = TextEditingController(), _notes = TextEditingController();
   PlatformFile? _file;
   bool _busy = false;
+  String _share = ''; // '' = only the family; else a hospital the patient visits
+  late final _hospitals = PDb.hospitalsOf(widget.patientId);
 
   Future<void> _pick() async {
     final f = await FilePicker.pickFile(type: FileType.custom, allowedExtensions: ['pdf', 'jpg', 'jpeg', 'png']);
@@ -105,7 +107,7 @@ class _UploadRecordScreenState extends State<UploadRecordScreen> {
     final ok = await guard(
       context,
       () => PDb.uploadRecord(widget.patientId,
-          type: _type, title: _title.text.trim(), notes: _notes.text.trim(), bytes: bytes, fileName: _file?.name),
+          type: _type, title: _title.text.trim(), notes: _notes.text.trim(), bytes: bytes, fileName: _file?.name, hospitalId: _share),
       ok: 'Record saved',
     );
     if (!mounted) return;
@@ -130,6 +132,19 @@ class _UploadRecordScreenState extends State<UploadRecordScreen> {
             onPressed: _pick,
             icon: const Icon(Icons.attach_file),
             label: Text(_file?.name ?? 'Attach PDF or photo (optional)'),
+          ),
+          const SizedBox(height: 12),
+          FutureBuilder<Map<String, String>>(
+            future: _hospitals,
+            builder: (context, snap) => DropdownButtonFormField<String>(
+              initialValue: _share,
+              decoration: const InputDecoration(labelText: 'Share with', prefixIcon: Icon(Icons.lock_outline)),
+              items: [
+                const DropdownMenuItem(value: '', child: Text('Only my family (private)')),
+                for (final h in (snap.data ?? {}).entries) DropdownMenuItem(value: h.key, child: Text('Doctors at ${h.value}')),
+              ],
+              onChanged: (v) => setState(() => _share = v ?? ''),
+            ),
           ),
           const SizedBox(height: 20),
           FilledButton(onPressed: _busy ? null : _save, child: const Text('Save Record')),

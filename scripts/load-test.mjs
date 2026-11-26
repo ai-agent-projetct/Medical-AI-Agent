@@ -16,8 +16,9 @@ const date = '2030-01-15';
 const put = (path, fields) => fetch(`${FS}/${path}`, { method: 'PATCH', headers: owner, body: JSON.stringify({ fields }) });
 const str = (v) => ({ stringValue: v });
 
-// A doctor working 06:00–22:00 that day: 32 half-hour slots.
-await put(`doctors/${doctorId}`, { name: str('Dr Load Test'), department: str('General Physician'), profileComplete: { booleanValue: true }, status: str('Active'), fee: { integerValue: '500' } });
+// A hospital, and a doctor there working 06:00–22:00 that day: 32 half-hour slots.
+await put('hospitals/loadtest-hospital', { name: str('Load Test Hospital'), status: str('Active') });
+await put(`doctors/${doctorId}`, { name: str('Dr Load Test'), department: str('General Physician'), profileComplete: { booleanValue: true }, status: str('Active'), fee: { integerValue: '500' }, hospitalId: str('loadtest-hospital') });
 await put(`schedules/${doctorId}`, { days: { mapValue: { fields: { [date]: { mapValue: { fields: {
   available: { booleanValue: true },
   sessions: { arrayValue: { values: [{ mapValue: { fields: { from: str('06:00'), to: str('22:00') } } }] } },

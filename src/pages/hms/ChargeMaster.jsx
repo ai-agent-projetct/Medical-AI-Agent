@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { doc, setDoc } from 'firebase/firestore';
-import { db } from '../../firebase';
-import { col, keyOf, limit, orderBy, query, useQueryDocs, where } from '../../hms';
+import { db, tenant } from '../../firebase';
+import { col, keyOf, limit, orderBy, query, useQueryDocs, where, scoped } from '../../hms';
 import { inr, Modal } from './common';
 
 const CATEGORIES = ['Consultation', 'Procedure', 'Surgery', 'Room', 'Nursing', 'Lab', 'Radiology', 'Package', 'Other'];
@@ -12,14 +12,14 @@ export default function ChargeMaster({ canEdit }) {
   const [category, setCategory] = useState('Consultation');
   const [edit, setEdit] = useState(null);
   const [error, setError] = useState('');
-  const list = useQueryDocs(() => query(col('services'), where('category', '==', category), orderBy('nameKey'), limit(300)), [category]);
+  const list = useQueryDocs(() => scoped('services', where('category', '==', category), orderBy('nameKey'), limit(300)), [category]);
 
   const save = async (e) => {
     e.preventDefault();
     try {
       const { id, ...s } = edit;
       await setDoc(id ? doc(db, 'services', id) : doc(col('services')),
-        { ...s, rate: Number(s.rate), gstRate: Number(s.gstRate), nameKey: keyOf(s.name) }, { merge: true });
+        { ...s, rate: Number(s.rate), gstRate: Number(s.gstRate), nameKey: keyOf(s.name), ...(id ? {} : { hospitalId: tenant.hospitalId }) }, { merge: true });
       setEdit(null);
     } catch (err) { setError(err.message); }
   };

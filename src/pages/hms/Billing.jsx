@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Receipt } from 'lucide-react';
-import { col, createInvoice, limit, orderBy, PAGE, query, todayYmd, useQueryDocs, where } from '../../hms';
+import { col, createInvoice, limit, orderBy, PAGE, query, todayYmd, useQueryDocs, where, scoped } from '../../hms';
 import { BillComposer, inr, InvoiceModal, Tabs, useDesk } from './common';
 
 /** OPD / general billing counter: new bills, the day's invoices, outstanding dues. */
@@ -13,9 +13,9 @@ export default function Billing({ isAdmin, kind: fixedKind }) {
   const [formKey, setFormKey] = useState(0);
   const kinds = fixedKind ? [fixedKind] : ['OPD', 'PHARMACY'];
 
-  const day = useQueryDocs(() => query(col('invoices'), where('date', '==', date), ...(fixedKind ? [where('kind', '==', fixedKind)] : []),
+  const day = useQueryDocs(() => scoped('invoices', where('date', '==', date), ...(fixedKind ? [where('kind', '==', fixedKind)] : []),
     orderBy('createdAt', 'desc'), limit(200)), [date, fixedKind]);
-  const dues = useQueryDocs(() => tab !== 'Dues' ? null : query(col('invoices'), where('status', 'in', ['Unpaid', 'Partial']),
+  const dues = useQueryDocs(() => tab !== 'Dues' ? null : scoped('invoices', where('status', 'in', ['Unpaid', 'Partial']),
     orderBy('date', 'desc'), limit(PAGE)), [tab]);
   const paidToday = day.docs.filter((i) => i.status !== 'Cancelled').reduce((s, i) => s + i.paid, 0);
   const billedToday = day.docs.filter((i) => i.status !== 'Cancelled').reduce((s, i) => s + i.total, 0);

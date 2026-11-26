@@ -8,8 +8,12 @@ import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { serverTimestamp } from 'firebase/firestore';
 import {
   auth, firebaseEnabled, useLiveCollection, reserveSlot, loadUserRole, ROLE_LABELS, logAudit, useAuditLogs, markBooked, seedCatalog, WINDOWS,
+  tenant, pickHospital, signOutLogged,
 } from './firebase';
 import Login from './pages/Login';
+import SuperAdmin from './pages/SuperAdmin';
+import UsersRoles from './pages/UsersRoles';
+import Equipment from './pages/Equipment';
 const CallRoom = lazy(() => import('./pages/CallRoom')); // Zego SDK is ~5 MB; only load it for calls
 
 import Dashboard from './pages/Dashboard';
@@ -61,7 +65,18 @@ export default function App() {
     return onAuthStateChanged(auth, async (user) => {
       if (!user) return setSession(null);
       const role = await loadUserRole(user.uid).catch(() => null);
-      return setSession({ user, role: ROLE_LABELS[role] ?? null, isAdmin: role === 'admin' });
+      const label = role === 'patient' ? null : ROLE_LABELS[role] ?? null;
+      const blocked = role === 'super_admin' ? null
+        : tenant.profile?.active === false ? 'This account is disabled. Ask your hospital admin to enable it.'
+        : label && !tenant.hospital?.name ? 'This account is not linked to a hospital.'
+        : tenant.hospital?.status === 'Suspended' ? `${tenant.hospital.name} is suspended on the platform. Contact the service provider.`
+        : null;
+      // One Login entry per browser session (onAuthStateChanged also fires on every page reload).
+      const key = `loginLogged:${user.uid}`;
+      let logged = true;
+      try { logged = sessionStorage.getItem(key) === '1'; sessionStorage.setItem(key, '1'); } catch { /* ignore */ }
+      if (label && !blocked && !logged) logAudit(label, 'Login', 'Authentication', `Signed in to the portal as ${user.email}`);
+      return setSession({ user, role: label, blocked, isSuper: role === 'super_admin', isAdmin: ['super_admin', 'admin', 'hospital_admin'].includes(role) });
     });
   }, []);
 
@@ -71,23 +86,47 @@ export default function App() {
   }
   if (session === undefined) return null;
   if (session === null) return <Login />;
-  if (!session.role) {
+  if (!session.role || session.blocked) {
     return (
       <div className="page-container" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh' }}>
         <div className="card" style={{ maxWidth: 440 }}>
-          <h3>No portal role assigned</h3>
-          <p style={{ color: 'var(--text-muted)' }}>Ask the hospital admin to set your role for {session.user.email}.</p>
+          <h3>{session.blocked ? 'Access blocked' : 'No portal role assigned'}</h3>
+          <p style={{ color: 'var(--text-muted)' }}>{session.blocked ?? `Ask the hospital admin to set your role for ${session.user.email}.`}</p>
           <button className="btn btn-secondary" onClick={() => signOut(auth)}><LogOut size={16} /> Sign out</button>
         </div>
       </div>
     );
   }
-  return <Portal initialRole={session.role} canSwitchRole={session.isAdmin} />;
+  return <Portal initialRole={session.role} canSwitchRole={session.isAdmin} isSuper={session.isSuper} />;
 }
 
-function Portal({ initialRole, canSwitchRole }) {
+// Which portal tabs each role sees (editable at runtime in the RBAC page). Firestore rules are the real guard.
+const PLATFORM_TABS = ['platform', 'audit', 'support', 'privacy', 'health'];
+const BASE_PERMISSIONS = {
+  'Super Admin': ['platform', 'users', 'assets', 'voice', 'hms-billing', 'hms-pos', 'hms-pharmacy', 'hms-ipd', 'hms-claims', 'hms-tariff', 'hms-reports', 'dashboard', 'futuristic', 'agentic', 'doctors', 'patients', 'departments', 'appointments', 'ivr', 'online', 'scribe', 'freed', 'printer', 'prescriptions', 'signature', 'profile', 'payouts', 'payments', 'orders', 'revenue', 'staff', 'roles', 'notifications', 'settings', 'support', 'privacy', 'health', 'audit'],
+  'Hospital Admin': ['users', 'assets', 'voice', 'hms-billing', 'hms-pos', 'hms-pharmacy', 'hms-ipd', 'hms-claims', 'hms-tariff', 'hms-reports', 'dashboard', 'futuristic', 'agentic', 'doctors', 'patients', 'departments', 'appointments', 'ivr', 'online', 'scribe', 'freed', 'printer', 'prescriptions', 'payouts', 'payments', 'orders', 'revenue', 'notifications', 'settings', 'support', 'privacy', 'health', 'audit'],
+  'Doctor': ['hms-ipd', 'dashboard', 'futuristic', 'agentic', 'doctors', 'patients', 'appointments', 'online', 'scribe', 'freed', 'printer', 'prescriptions', 'signature', 'profile', 'payouts', 'support', 'privacy', 'health'],
+  'Receptionist': ['voice', 'hms-billing', 'hms-ipd', 'dashboard', 'agentic', 'patients', 'appointments', 'orders', 'ivr', 'online', 'notifications', 'support', 'health'],
+  'Pharmacist': ['hms-pos', 'hms-pharmacy', 'hms-tariff', 'support'],
+  'Billing Staff': ['hms-billing', 'hms-pos', 'hms-ipd', 'hms-claims', 'hms-tariff', 'hms-reports', 'dashboard', 'agentic', 'patients', 'appointments', 'payouts', 'payments', 'orders', 'revenue', 'support', 'health'],
+  'Nurse': ['hms-ipd', 'dashboard', 'patients', 'appointments', 'online', 'assets', 'support', 'privacy'],
+  'Lab Technician': ['dashboard', 'patients', 'appointments', 'assets', 'support', 'privacy'],
+  'Administration': ['dashboard', 'assets', 'departments', 'staff', 'notifications', 'support', 'privacy', 'health'],
+};
+
+// Plan modules a hospital has bought (hospitals/{id}.modules); tabs of other modules are hidden.
+const MODULE_OF = {
+  'hms-billing': 'billing', 'hms-pos': 'pharmacy', 'hms-pharmacy': 'pharmacy', 'hms-ipd': 'ipd', 'hms-claims': 'billing',
+  'hms-tariff': 'billing', 'hms-reports': 'billing', voice: 'voice', ivr: 'voice', agentic: 'voice', assets: 'assets',
+  online: 'telehealth', scribe: 'ai', freed: 'ai', printer: 'ai', futuristic: 'ai',
+};
+const hasModule = (key) => !firebaseEnabled || !tenant.hospital?.modules || !MODULE_OF[key] || tenant.hospital.modules.includes(MODULE_OF[key]);
+
+function Portal({ initialRole, canSwitchRole, isSuper }) {
+  // The super admin without a hospital picked works in the platform console only.
+  const platformOnly = isSuper && firebaseEnabled && !tenant.hospitalId;
   const [currentRole, setCurrentRole] = useState(initialRole);
-  const [activeTab, setActiveTab] = useState(initialRole === 'Pharmacist' ? 'hms-pos' : 'dashboard');
+  const [activeTab, setActiveTab] = useState(platformOnly ? 'platform' : initialRole === 'Pharmacist' ? 'hms-pos' : 'dashboard');
   const [showNotificationsDrawer, setShowNotificationsDrawer] = useState(false);
 
   // 1. Initial State for Doctors
@@ -145,12 +184,12 @@ function Portal({ initialRole, canSwitchRole }) {
     };
   }
 
-  const canSeed = firebaseEnabled && canSwitchRole && doctors.length === 0 && patients.length === 0;
+  const canSeed = firebaseEnabled && canSwitchRole && !platformOnly && doctors.length === 0 && patients.length === 0;
   const loadSampleData = async () => {
     setDoctors(sampleDoctors);
     setPatients(samplePatients);
     setDepartments(sampleDepartments);
-    await seedCatalog(catalog);
+    if (isSuper) await seedCatalog(catalog); // the medicine / lab-test catalog is platform-wide
     setStaff(sampleStaff);
     setPayments(samplePayments);
     // Link by the sample lists directly: the live doctor/patient lists are still empty at this point.
@@ -193,14 +232,7 @@ function Portal({ initialRole, canSwitchRole }) {
   const [orders, setOrders] = useLiveCollection('orders', [], undefined, WINDOWS.orders);
 
   // 8. Dynamic Access Permission Matrix per Role
-  const [rolePermissions, setRolePermissions] = useState({
-    'Super Admin': ['voice', 'hms-billing', 'hms-pos', 'hms-pharmacy', 'hms-ipd', 'hms-claims', 'hms-tariff', 'hms-reports', 'dashboard', 'futuristic', 'agentic', 'doctors', 'patients', 'departments', 'appointments', 'ivr', 'online', 'scribe', 'freed', 'printer', 'prescriptions', 'signature', 'profile', 'payouts', 'payments', 'orders', 'revenue', 'staff', 'roles', 'notifications', 'settings', 'support', 'privacy', 'health', 'audit'],
-    'Hospital Admin': ['voice', 'hms-billing', 'hms-pos', 'hms-pharmacy', 'hms-ipd', 'hms-claims', 'hms-tariff', 'hms-reports', 'dashboard', 'futuristic', 'agentic', 'doctors', 'patients', 'departments', 'appointments', 'ivr', 'online', 'scribe', 'freed', 'printer', 'prescriptions', 'payouts', 'payments', 'orders', 'revenue', 'notifications', 'settings', 'support', 'privacy', 'health', 'audit'],
-    'Doctor': ['hms-ipd', 'dashboard', 'futuristic', 'agentic', 'doctors', 'patients', 'appointments', 'online', 'scribe', 'freed', 'printer', 'prescriptions', 'signature', 'profile', 'payouts', 'support', 'privacy', 'health'],
-    'Receptionist': ['voice', 'hms-billing', 'hms-ipd', 'dashboard', 'agentic', 'patients', 'appointments', 'orders', 'ivr', 'online', 'notifications', 'support', 'health'],
-    'Pharmacist': ['hms-pos', 'hms-pharmacy', 'hms-tariff', 'support'],
-    'Billing Staff': ['hms-billing', 'hms-pos', 'hms-ipd', 'hms-claims', 'hms-tariff', 'hms-reports', 'dashboard', 'agentic', 'patients', 'appointments', 'payouts', 'payments', 'orders', 'revenue', 'support', 'health']
-  });
+  const [rolePermissions, setRolePermissions] = useState(() => (platformOnly ? { ...BASE_PERMISSIONS, 'Super Admin': PLATFORM_TABS } : BASE_PERMISSIONS));
 
   const liveAuditLogs = useAuditLogs(['Super Admin', 'Hospital Admin'].includes(initialRole));
   const auditLogs = firebaseEnabled ? liveAuditLogs : demoAuditLogs;
@@ -241,6 +273,9 @@ function Portal({ initialRole, canSwitchRole }) {
   const isHmsAdmin = ['Super Admin', 'Hospital Admin'].includes(currentRole);
 
   const navigationItems = [
+    { key: 'platform', label: 'Hospitals, Plans & Metrics', icon: <Layers size={18} />, section: 'platform' },
+    { key: 'users', label: 'Users, Roles & Logins', icon: <UserPlus size={18} />, section: 'management' },
+    { key: 'assets', label: 'Equipment & Maintenance', icon: <Settings size={18} />, section: 'operations' },
     { key: 'dashboard', label: 'Dashboard', icon: <Activity size={18} />, section: 'main' },
     { key: 'futuristic', label: 'Futuristic AI Care Matrix 🚀', icon: <Cpu size={18} style={{ color: '#86198f' }} />, section: 'main' },
     { key: 'agentic', label: 'Agentic 6-Lang Voice 🤖', icon: <Bot size={18} style={{ color: '#0284c7' }} />, section: 'main' },
@@ -278,6 +313,8 @@ function Portal({ initialRole, canSwitchRole }) {
     { key: 'audit', label: 'Security Audit Trail', icon: <FileText size={18} />, section: 'management' }
   ];
 
+  const showSection = (section) => navigationItems.some((item) => item.section === section && rolePermissions[currentRole]?.includes(item.key) && hasModule(item.key));
+
   function BuildingIcon({ size }) {
     return (
       <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -298,55 +335,13 @@ function Portal({ initialRole, canSwitchRole }) {
       <aside className="app-sidebar">
         <div className="sidebar-logo">
           <HeartPulse size={24} />
-          <h1>ABC Hospital</h1>
+          <h1>{tenant.hospital?.name ?? (isSuper ? 'Platform Console' : 'ABC Hospital')}</h1>
         </div>
 
         <nav className="sidebar-nav">
-          <div className="nav-section-title">Main</div>
+          {isSuper && <div className="nav-section-title">Platform (Super Admin)</div>}
           {navigationItems
-            .filter(item => item.section === 'main' && rolePermissions[currentRole]?.includes(item.key))
-            .map((item, idx) => (
-              <a 
-                key={idx} 
-                className={`nav-link ${activeTab === item.key ? 'active' : ''}`}
-                onClick={() => setActiveTab(item.key)}
-              >
-                {item.icon}
-                <span>{item.label}</span>
-              </a>
-            ))}
-
-          <div className="nav-section-title">Clinical Workspace</div>
-          {navigationItems
-            .filter(item => item.section === 'clinical' && rolePermissions[currentRole]?.includes(item.key))
-            .map((item, idx) => (
-              <a 
-                key={idx} 
-                className={`nav-link ${activeTab === item.key ? 'active' : ''}`}
-                onClick={() => setActiveTab(item.key)}
-              >
-                {item.icon}
-                <span>{item.label}</span>
-              </a>
-            ))}
-
-          <div className="nav-section-title">Operations</div>
-          {navigationItems
-            .filter(item => item.section === 'operations' && rolePermissions[currentRole]?.includes(item.key))
-            .map((item, idx) => (
-              <a 
-                key={idx} 
-                className={`nav-link ${activeTab === item.key ? 'active' : ''}`}
-                onClick={() => setActiveTab(item.key)}
-              >
-                {item.icon}
-                <span>{item.label}</span>
-              </a>
-            ))}
-
-          <div className="nav-section-title">Hospital Billing & Pharmacy</div>
-          {navigationItems
-            .filter(item => item.section === 'hms' && rolePermissions[currentRole]?.includes(item.key))
+            .filter(item => item.section === 'platform' && rolePermissions[currentRole]?.includes(item.key))
             .map((item) => (
               <a key={item.key} className={`nav-link ${activeTab === item.key ? 'active' : ''}`} onClick={() => setActiveTab(item.key)}>
                 {item.icon}
@@ -354,9 +349,9 @@ function Portal({ initialRole, canSwitchRole }) {
               </a>
             ))}
 
-          <div className="nav-section-title">Finance & Payouts</div>
+          {showSection('main') && <div className="nav-section-title">Main</div>}
           {navigationItems
-            .filter(item => item.section === 'finance' && rolePermissions[currentRole]?.includes(item.key))
+            .filter(item => item.section === 'main' && rolePermissions[currentRole]?.includes(item.key) && hasModule(item.key))
             .map((item, idx) => (
               <a 
                 key={idx} 
@@ -368,9 +363,9 @@ function Portal({ initialRole, canSwitchRole }) {
               </a>
             ))}
 
-          <div className="nav-section-title">Management & Governance</div>
+          {showSection('clinical') && <div className="nav-section-title">Clinical Workspace</div>}
           {navigationItems
-            .filter(item => item.section === 'management' && rolePermissions[currentRole]?.includes(item.key))
+            .filter(item => item.section === 'clinical' && rolePermissions[currentRole]?.includes(item.key) && hasModule(item.key))
             .map((item, idx) => (
               <a 
                 key={idx} 
@@ -382,9 +377,61 @@ function Portal({ initialRole, canSwitchRole }) {
               </a>
             ))}
 
-          <div className="nav-section-title">Support & Compliance</div>
+          {showSection('operations') && <div className="nav-section-title">Operations</div>}
           {navigationItems
-            .filter(item => item.section === 'support' && rolePermissions[currentRole]?.includes(item.key))
+            .filter(item => item.section === 'operations' && rolePermissions[currentRole]?.includes(item.key) && hasModule(item.key))
+            .map((item, idx) => (
+              <a 
+                key={idx} 
+                className={`nav-link ${activeTab === item.key ? 'active' : ''}`}
+                onClick={() => setActiveTab(item.key)}
+              >
+                {item.icon}
+                <span>{item.label}</span>
+              </a>
+            ))}
+
+          {showSection('hms') && <div className="nav-section-title">Hospital Billing & Pharmacy</div>}
+          {navigationItems
+            .filter(item => item.section === 'hms' && rolePermissions[currentRole]?.includes(item.key) && hasModule(item.key))
+            .map((item) => (
+              <a key={item.key} className={`nav-link ${activeTab === item.key ? 'active' : ''}`} onClick={() => setActiveTab(item.key)}>
+                {item.icon}
+                <span>{item.label}</span>
+              </a>
+            ))}
+
+          {showSection('finance') && <div className="nav-section-title">Finance & Payouts</div>}
+          {navigationItems
+            .filter(item => item.section === 'finance' && rolePermissions[currentRole]?.includes(item.key) && hasModule(item.key))
+            .map((item, idx) => (
+              <a 
+                key={idx} 
+                className={`nav-link ${activeTab === item.key ? 'active' : ''}`}
+                onClick={() => setActiveTab(item.key)}
+              >
+                {item.icon}
+                <span>{item.label}</span>
+              </a>
+            ))}
+
+          {showSection('management') && <div className="nav-section-title">Management & Governance</div>}
+          {navigationItems
+            .filter(item => item.section === 'management' && rolePermissions[currentRole]?.includes(item.key) && hasModule(item.key))
+            .map((item, idx) => (
+              <a 
+                key={idx} 
+                className={`nav-link ${activeTab === item.key ? 'active' : ''}`}
+                onClick={() => setActiveTab(item.key)}
+              >
+                {item.icon}
+                <span>{item.label}</span>
+              </a>
+            ))}
+
+          {showSection('support') && <div className="nav-section-title">Support & Compliance</div>}
+          {navigationItems
+            .filter(item => item.section === 'support' && rolePermissions[currentRole]?.includes(item.key) && hasModule(item.key))
             .map((item, idx) => (
               <a 
                 key={idx} 
@@ -417,8 +464,13 @@ function Portal({ initialRole, canSwitchRole }) {
         <header className="app-header">
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <span style={{ fontWeight: '700', fontSize: '1.1rem', color: 'var(--text-main)', fontFamily: 'var(--font-display)' }}>
-              ABC Healthcare Portal
+              {tenant.hospital?.name ?? 'ABC Healthcare'} Portal
             </span>
+            {isSuper && firebaseEnabled && (
+              <button className="btn btn-secondary" style={{ marginLeft: 12 }} onClick={() => pickHospital(null)} disabled={platformOnly}>
+                {platformOnly ? 'Platform console' : '← Back to platform'}
+              </button>
+            )}
           </div>
 
           <div className="header-controls">
@@ -439,16 +491,13 @@ function Portal({ initialRole, canSwitchRole }) {
                   }
                 }}
               >
-                <option value="Super Admin">Super Admin</option>
-                <option value="Hospital Admin">Hospital Admin</option>
-                <option value="Doctor">Doctor</option>
-                <option value="Receptionist">Receptionist</option>
-                <option value="Billing Staff">Billing Staff</option>
+                {[...(isSuper ? ['Super Admin'] : []), 'Hospital Admin', 'Doctor', 'Nurse', 'Receptionist', 'Lab Technician', 'Billing Staff', 'Pharmacist', 'Administration']
+                  .map((r) => <option key={r} value={r}>{r}</option>)}
               </select>
             </div>}
 
             {firebaseEnabled && (
-              <button className="header-icon-btn" title="Sign out" aria-label="Sign out" onClick={() => signOut(auth)}>
+              <button className="header-icon-btn" title="Sign out" aria-label="Sign out" onClick={signOutLogged}>
                 <LogOut size={18} />
               </button>
             )}
@@ -648,7 +697,7 @@ function Portal({ initialRole, canSwitchRole }) {
               {activeTab === 'voice' && <VoiceAgent />}
               {activeTab === 'orders' && (
                 <Orders orders={orders} setOrders={setOrders} addAuditLog={addAuditLog} currentRole={currentRole}
-                  onLoadCatalog={firebaseEnabled && canSwitchRole ? () => seedCatalog(catalog).then(() => alert('Catalog loaded: medicines, lab tests and articles.')) : null} />
+                  onLoadCatalog={firebaseEnabled && isSuper ? () => seedCatalog(catalog).then(() => alert('Catalog loaded: medicines, lab tests and articles.')) : null} />
               )}
               {activeTab === 'payments' && (
                 <Payments 
@@ -707,6 +756,9 @@ function Portal({ initialRole, canSwitchRole }) {
                   currentRole={currentRole}
                 />
               )}
+              {activeTab === 'platform' && <SuperAdmin />}
+              {activeTab === 'users' && <UsersRoles />}
+              {activeTab === 'assets' && <Equipment canEdit={['Super Admin', 'Hospital Admin', 'Administration'].includes(currentRole)} />}
               {activeTab === 'audit' && (
                 <AuditLogs 
                   auditLogs={auditLogs}
@@ -717,7 +769,7 @@ function Portal({ initialRole, canSwitchRole }) {
         </div>
 
         {/* 4. GOOGLE STITCH AI FLOATING ACTION DOCK */}
-        <div className="stitch-floating-dock">
+        {!platformOnly && <div className="stitch-floating-dock">
           <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.5px', marginRight: '4px' }}>
             Stitch AI Dock
           </span>
@@ -757,7 +809,7 @@ function Portal({ initialRole, canSwitchRole }) {
           >
             <Stethoscope size={15} style={{ color: '#34d399' }} /> AI Rx & CDSS
           </button>
-        </div>
+        </div>}
       </main>
     </div>
   );

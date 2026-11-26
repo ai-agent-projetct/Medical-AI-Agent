@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
 import { ShieldCheck } from 'lucide-react';
 import { arrayUnion, doc, runTransaction, serverTimestamp, Timestamp } from 'firebase/firestore';
-import { auth, db, logAudit } from '../../firebase';
-import { addPayment, col, limit, orderBy, query, useQueryDocs, where } from '../../hms';
+import { auth, db, logAudit, tenant } from '../../firebase';
+import { addPayment, col, limit, orderBy, query, useQueryDocs, where, scoped } from '../../hms';
 import { inr, Modal, PatientPicker, Tabs } from './common';
 
 // Cashless: pre-auth → approval → final claim → settlement. Reimbursement: claim → settlement.
@@ -16,7 +16,7 @@ export default function Claims({ canEdit }) {
   const [form, setForm] = useState(null);
   const [current, setCurrent] = useState(null);
   const [error, setError] = useState('');
-  const list = useQueryDocs(() => query(col('claims'), where('stage', 'in', tab === 'Open' ? OPEN : ['Settled', 'Rejected']),
+  const list = useQueryDocs(() => scoped('claims', where('stage', 'in', tab === 'Open' ? OPEN : ['Settled', 'Rejected']),
     orderBy('updatedAt', 'desc'), limit(100)), [tab]);
   const me = () => auth?.currentUser?.email ?? 'staff';
 
@@ -31,7 +31,7 @@ export default function Claims({ canEdit }) {
         requested: Number(form.requested), approved: 0, settled: 0, deductions: 0,
         stage: form.type === 'Cashless' ? 'Pre-auth Requested' : 'Claim Submitted',
         history: [{ stage: form.type === 'Cashless' ? 'Pre-auth Requested' : 'Claim Submitted', note: 'Created', by: me(), at: Timestamp.now() }],
-        createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+        createdAt: serverTimestamp(), updatedAt: serverTimestamp(), hospitalId: tenant.hospitalId,
       }));
       logAudit('Billing', 'Created Insurance Claim', 'Claims', `${form.patient.name} · ${form.insurer} · ₹${form.requested}`);
       setForm(null);

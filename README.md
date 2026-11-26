@@ -49,6 +49,34 @@ Every money and stock change runs in a Firestore transaction. Receipts are appen
 admin. New `pharmacist` role (set by an admin). These modules query by date, status or search prefix with
 limits, so they don't download whole collections.
 
+**Multi-hospital SaaS (one platform, many customer hospitals)**
+- **Super Admin** (the platform owner, role `super_admin`): portal → *Hospitals, Plans & Metrics*. Create
+  hospitals, pick a plan (Basic / Pro / Enterprise) or individual modules, suspend or re-activate a hospital,
+  create its first hospital admin, and see staff, patients, this month's appointments and billing per hospital.
+  **Open** works inside any hospital; *Back to platform* returns. The super admin reads every hospital's data
+  and audit trail.
+- **Hospital Admin** (`admin` / `hospital_admin`) controls only their own hospital:
+  - *Users, Roles & Logins*: create logins (function `createStaffUser`) with a category: doctor, nurse,
+    receptionist, lab technician, billing, pharmacist, administration or hospital admin. Also department,
+    approving doctors who signed up in the app, disabling a user (this also disables the Auth account and ends
+    its sessions), and a login/logout history.
+  - *Equipment & Maintenance*: machine register with purchase bills, warranty and AMC, every service, AMC visit,
+    calibration or repair with its bill and downtime, plus due and overdue services and expiring warranties.
+  - *Security Audit Trail*: logins, logouts, record views and field-level change history (who changed what,
+    from what to what) for patients, records, appointments, invoices, equipment and users.
+  - All bills, pharmacy, IPD, patients and records of that hospital only.
+- **Isolation is enforced by `firestore.rules`, not the UI.** Every hospital-owned document carries
+  `hospitalId`, and staff can only read or write their own hospital's data. Suspended hospitals and
+  disabled users are locked out. Audited writes must carry `updatedBy` = the writer, and the `audit*`
+  functions turn them into the change history. A patient has one app account. A hospital sees the patient's
+  profile once they book there (`patients.hospitalIds`), but only its own records, appointments and bills.
+  Patients choose whether an uploaded report is private or shared with one of their hospitals.
+- Doctors who sign up in the app enter their **hospital code** (the hospital's id) and wait for that
+  hospital admin's approval.
+- Voice agent: each hospital sets its Twilio number as `hospitals/{id}.voiceNumber` (optional
+  `receptionNumber`). Calls to that number book with that hospital's doctors. `DEFAULT_HOSPITAL_ID` handles
+  unknown numbers.
+
 Both apps share appointments (token numbers, 30-min slots from each doctor's schedule), patient **medical records**
 (consultation notes, vitals, prescriptions, lab-report uploads) and **ZegoCloud video consultations**. The video
 room ID is the appointment ID. The patient joins at `<portal>/#/call/<appointmentId>` (no account needed),
@@ -58,8 +86,9 @@ using a link the doctor sends on WhatsApp from the app.
 
 1. Create a Firebase project. Enable **Authentication → Email/Password** and **Google**, **Firestore** and **Storage**.
 2. Deploy rules and indexes from this folder: `npx firebase-tools deploy --only firestore,storage`
-3. First admin: create a user in Authentication, then in Firestore add `users/<uid>` with `{ role: "admin" }`.
-   Staff roles: `admin | hospital_admin | doctor | receptionist | billing`. Doctors self-register from the app.
+3. Platform owner: create a user in Authentication, then in Firestore add `users/<uid>` with
+   `{ role: "super_admin" }`. Sign in to the portal, create hospitals and their admins. Hospital admins create
+   everyone else. Staff roles: `hospital_admin | doctor | nurse | receptionist | lab_tech | billing | pharmacist | admin_staff`.
 
 ## 2. Web portal
 
@@ -110,9 +139,18 @@ The demo hospital has 8 doctors across specialities, 62 patients, today's and to
 daily tokens, a tariff, pharmacy stock (with near-expiry and low-stock items), 24 beds in 3 wards and the
 patient-app catalogs. Logins (emulator only):
 
+Two customer hospitals: **City General Hospital** (`city-general`, everything above plus 4 machines with
+service history) and **Lake View Clinic** (`lake-view`, 2 doctors, 10 patients). Lake View staff can't see City
+General's data, and vice versa.
+
 | Role | Email | Password | App |
 |---|---|---|---|
-| Admin | admin@demo.test | demo-admin-123 | portal |
+| Super Admin (platform) | owner@demo.test | demo-owner-123 | portal |
+| Hospital Admin · City General | admin@demo.test | demo-admin-123 | portal |
+| Nurse · City General | nurse@demo.test | demo-nurse-123 | portal |
+| Administration (equipment) · City General | ops@demo.test | demo-ops-123 | portal |
+| Hospital Admin · Lake View | admin2@demo.test | demo-admin2-123 | portal |
+| Reception · Lake View | reception2@demo.test | demo-recep2-123 | portal |
 | Reception | reception@demo.test | demo-recep-123 | portal |
 | Billing | billing@demo.test | demo-bill-123 | portal |
 | Pharmacist | pharmacy@demo.test | demo-pharm-123 | portal |
@@ -184,8 +222,10 @@ Do these steps in order. Everything after step 1 runs from this folder.
    `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_API_VERSION` and `WHATSAPP_TEMPLATE`. The template is approved in Meta
    Business Manager, with body variables patient, doctor, date, time and token.
 4. **Deploy**: `npm run build && npx firebase-tools deploy`. This deploys rules, indexes, functions and hosting.
-5. **First admin**: create the user in Authentication, then add `users/<uid>` = `{ role: "admin" }`.
-   Load the tariff and catalogs from the portal.
+5. **Platform owner**: create the user in Authentication, then add `users/<uid>` = `{ role: "super_admin" }`.
+   Create the hospitals and their admins in *Hospitals, Plans & Metrics*. Load the catalogs from the portal.
+   If you are upgrading an existing single-hospital database, add `hospitalId` to every hospital-owned document
+   (and `hospitalIds` to patients) before deploying the new rules. Without it those documents are unreadable.
 6. **Backups**: enable point-in-time recovery and a daily backup schedule:
    ```bash
    gcloud firestore databases update --database='(default)' --enable-pitr

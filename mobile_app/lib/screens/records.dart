@@ -55,9 +55,9 @@ class _RecordsTabState extends State<RecordsTab> {
             ),
           ),
           Expanded(
-            // ponytail: streams all patients and filters locally; add a name-prefix query past ~2k patients.
+            // ponytail: streams up to 2k of this hospital's patients and filters locally; use Db.searchPatients past that.
             child: StreamBuilder<QuerySnapshot<Json>>(
-              stream: Db.patients.orderBy('name').snapshots(),
+              stream: Db.patients.where('hospitalIds', arrayContains: hospitalId).orderBy('name').limit(2000).snapshots(),
               builder: (context, snap) {
                 if (snap.hasError) return Center(child: Text('${snap.error}'));
                 if (!snap.hasData) return const Center(child: CircularProgressIndicator());
@@ -188,7 +188,7 @@ class _RecordsList extends StatefulWidget {
 }
 
 class _RecordsListState extends State<_RecordsList> {
-  late final _stream = Db.records(widget.patientId).orderBy('createdAt', descending: true).snapshots();
+  late final _stream = Db.records(widget.patientId).where('hospitalId', isEqualTo: hospitalId).orderBy('createdAt', descending: true).snapshots();
 
   @override
   void initState() {
@@ -308,7 +308,9 @@ class _PatientFormScreenState extends State<PatientFormScreen> {
     if (!_form.currentState!.validate()) return;
     setState(() => _saving = true);
     final data = {for (final e in _c.entries) e.key: e.value.text.trim(), 'gender': _gender, 'status': widget.initial['status'] ?? 'Active'};
-    final ok = await guard(context, () => widget.id == null ? Db.patients.add(data) : Db.patients.doc(widget.id).set(data, SetOptions(merge: true)),
+    final ok = await guard(context, () => widget.id == null
+            ? Db.patients.add({...data, 'hospitalIds': [hospitalId], ...by})
+            : Db.patients.doc(widget.id).set({...data, ...by}, SetOptions(merge: true)),
         ok: widget.id == null ? 'Patient registered.' : 'Patient updated.');
     if (!mounted) return;
     setState(() => _saving = false);
@@ -412,6 +414,8 @@ class _AddRecordScreenState extends State<AddRecordScreen> {
         'doctorId': uid,
         ...attachment,
         'createdAt': FieldValue.serverTimestamp(),
+        'hospitalId': hospitalId,
+        ...by,
       });
     }, ok: 'Record saved.');
     if (!mounted) return;

@@ -54,7 +54,8 @@ export async function withRetry(fn, tries = 6) {
   }
 }
 
-export function makeCtx(db, { hospital, receptionNumber, source }) {
+/** Booking context for one hospital (hospitalId) — doctors, patients and bookings never cross hospitals. */
+export function makeCtx(db, { hospitalId, hospital, receptionNumber, source }) {
   let doctorCache = null;
   return {
     hospital,
@@ -63,7 +64,9 @@ export function makeCtx(db, { hospital, receptionNumber, source }) {
     addDays,
     async doctors() {
       if (!doctorCache) {
-        const snap = await db.collection('doctors').where('profileComplete', '==', true).get();
+        let q = db.collection('doctors').where('profileComplete', '==', true);
+        if (hospitalId) q = q.where('hospitalId', '==', hospitalId);
+        const snap = await q.get();
         doctorCache = snap.docs.map((d) => ({ id: d.id, ...d.data() })).filter((d) => d.status !== 'Inactive');
       }
       return doctorCache;
@@ -79,13 +82,17 @@ export function makeCtx(db, { hospital, receptionNumber, source }) {
     async findPatient(phone) {
       const variants = phoneVariants(phone);
       if (!variants.length) return null;
-      const snap = await db.collection('patients').where('phone', 'in', variants.slice(0, 10)).limit(1).get();
+      let q = db.collection('patients').where('phone', 'in', variants.slice(0, 10));
+      if (hospitalId) q = q.where('hospitalIds', 'array-contains', hospitalId);
+      const snap = await q.limit(1).get();
       return snap.empty ? null : { id: snap.docs[0].id, name: snap.docs[0].data().name };
     },
     /** Slot lock + per-doctor daily token + booking in one transaction (same as the apps). */
     async book({ doctor, date, time, patient, extra = {} }) {
       const docSnap = await db.doc(`doctors/${doctor.id}`).get();
       const d = docSnap.data() ?? {};
+      const hid = d.hospitalId ?? hospitalId;
+      if (!hid) throw new Error('Doctor is not linked to a hospital');
       const slotRef = db.doc(`bookedSlots/${doctor.id}_${date}`);
       const counterRef = db.doc(`counters/${doctor.id}_${date}`);
       const aptRef = db.collection('appointments').doc();
@@ -98,14 +105,18 @@ export function makeCtx(db, { hospital, receptionNumber, source }) {
         if (!patientId) {
           const pRef = db.collection('patients').doc();
           patientId = pRef.id;
-          tx.set(pRef, { name: patient.name, phone, status: 'Active', source, createdAt: FieldValue.serverTimestamp() });
+          tx.set(pRef, { name: patient.name, phone, status: 'Active', source, hospitalIds: [hid], updatedBy: 'system', createdAt: FieldValue.serverTimestamp() });
+        } else {
+          // An existing (e.g. patient-app) profile becomes visible to the hospital it books with.
+          tx.update(db.doc(`patients/${patientId}`), { hospitalIds: FieldValue.arrayUnion(hid), updatedBy: 'system' });
         }
         tx.set(counterRef, { next: token + 1 }, { merge: true });
         tx.set(slotRef, { times: FieldValue.arrayUnion(time) }, { merge: true });
         tx.set(aptRef, {
           patient: patient.name, patientId, patientPhone: phone, doctor: d.name ?? doctor.name, doctorId: doctor.id,
           department: d.department ?? 'General', fee: d.fee ?? 0, date, time, type: 'Offline', visitType: 'General',
-          status: 'Confirmed', token, source, createdAt: FieldValue.serverTimestamp(), ...extra,
+          status: 'Confirmed', token, source, createdAt: FieldValue.serverTimestamp(), hospitalId: hid, hospital: d.hospital ?? hospital ?? '',
+          updatedBy: extra.ownerUid ?? 'system', ...extra,
         });
         return { token, appointmentId: aptRef.id, patientId };
       }, { maxAttempts: 10 }));

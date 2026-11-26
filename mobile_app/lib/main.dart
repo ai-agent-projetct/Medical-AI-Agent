@@ -87,11 +87,19 @@ class _RoleGate extends StatelessWidget {
           if (snap.hasError) return _ErrorScreen('${snap.error}');
           if (!snap.hasData) return const SplashScreen();
           if (!snap.data!.exists) return const _ChooseRoleScreen();
-          return switch (snap.data!.data()?['role']) {
-            'patient' => const PatientShell(),
-            'doctor' => const _DoctorGate(),
-            _ => const _ErrorScreen('This account is for hospital staff. Please use the web portal.'),
-          };
+          final user = snap.data!.data()!;
+          if (user['role'] == 'patient') return const PatientShell();
+          if (user['role'] != 'doctor') return const _ErrorScreen('This account is for hospital staff. Please use the web portal.');
+          // Doctors work inside one hospital: name it, wait for its admin's approval, then the doctor app.
+          final hid = user['hospitalId'] as String? ?? '';
+          if (hid.isEmpty) return const _JoinHospitalScreen();
+          if (user['active'] == false) {
+            return _ErrorScreen(user['disabledBy'] != null
+                ? 'Your account has been disabled by the hospital admin.'
+                : 'Request sent to hospital "$hid".\nYou can start once its admin approves your account in Users, Roles & Logins.');
+          }
+          hospitalId = hid;
+          return _DoctorGate(key: ValueKey(hid));
         },
       );
 }
@@ -145,6 +153,48 @@ class _ChooseRoleScreenState extends State<_ChooseRoleScreen> {
       );
 }
 
+/// A doctor who signed up in the app names their hospital by the code its admin gives them.
+class _JoinHospitalScreen extends StatefulWidget {
+  const _JoinHospitalScreen();
+
+  @override
+  State<_JoinHospitalScreen> createState() => _JoinHospitalScreenState();
+}
+
+class _JoinHospitalScreenState extends State<_JoinHospitalScreen> {
+  final _code = TextEditingController();
+  bool _busy = false;
+
+  Future<void> _join() async {
+    if (_code.text.trim().isEmpty) return snack(context, 'Enter your hospital code');
+    setState(() => _busy = true);
+    await guard(context, () => Db.joinHospital(_code.text));
+    if (mounted) setState(() => _busy = false);
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        body: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 420),
+            child: ListView(padding: const EdgeInsets.all(24), shrinkWrap: true, children: [
+              const Icon(Icons.local_hospital_outlined, size: 48, color: kPrimary),
+              const SizedBox(height: 12),
+              const Text('Join your hospital', textAlign: TextAlign.center, style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
+              const SizedBox(height: 8),
+              const Text('Enter the hospital code from your hospital admin. They approve your account before you can see patients.',
+                  textAlign: TextAlign.center, style: TextStyle(color: kMuted)),
+              const SizedBox(height: 16),
+              TextField(controller: _code, autocorrect: false, decoration: const InputDecoration(labelText: 'Hospital code', prefixIcon: Icon(Icons.qr_code))),
+              const SizedBox(height: 16),
+              FilledButton(onPressed: _busy ? null : _join, child: const Text('Request to join')),
+              TextButton(onPressed: () => FirebaseAuth.instance.signOut(), child: const Text('Log out')),
+            ]),
+          ),
+        ),
+      );
+}
+
 class _ErrorScreen extends StatelessWidget {
   const _ErrorScreen(this.message);
   final String message;
@@ -166,7 +216,7 @@ class _ErrorScreen extends StatelessWidget {
 /// Routes a signed-in doctor to profile setup or home. A failed profile read shows a retry
 /// instead of an endless splash screen.
 class _DoctorGate extends StatefulWidget {
-  const _DoctorGate();
+  const _DoctorGate({super.key});
 
   @override
   State<_DoctorGate> createState() => _DoctorGateState();

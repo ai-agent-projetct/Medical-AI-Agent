@@ -23,7 +23,7 @@ import {
   collection, doc, query, where, orderBy, limit, onSnapshot, getDocs, runTransaction, serverTimestamp,
   increment, startAt, endAt, getAggregateFromServer, sum, count, Timestamp,
 } from 'firebase/firestore';
-import { auth, db, logAudit } from './firebase';
+import { auth, db, logAudit, tenant } from './firebase';
 import { bedDays, computeBill, fefo, financialYear, invoiceNumber, payState } from './billing';
 
 export const todayYmd = () => new Date().toLocaleDateString('en-CA'); // yyyy-MM-dd in local time
@@ -50,6 +50,9 @@ export function useQueryDocs(make, deps) {
 }
 
 export const col = (name) => collection(db, name);
+/** A query on a hospital-owned collection, limited to the hospital this portal session works in. */
+export const scoped = (name, ...constraints) => query(col(name), where('hospitalId', '==', tenant.hospitalId), ...constraints);
+const H = () => tenant.hospitalId;
 
 // ---------------------------------------------------------------- lookups
 /** Patients by name prefix or exact phone (existing patient docs only have `name`/`phone`). */
@@ -57,23 +60,23 @@ export async function searchPatients(term) {
   const t = term.trim();
   if (t.length < 2) return [];
   if (/^[+\d\s-]{6,}$/.test(t)) {
-    const snap = await getDocs(query(col('patients'), where('phone', '==', t), limit(10)));
+    const snap = await getDocs(query(col('patients'), where('hospitalIds', 'array-contains', H()), where('phone', '==', t), limit(10)));
     return snap.docs.map((d) => ({ ...d.data(), id: d.id }));
   }
   const cap = t.replace(/\b\w/g, (c) => c.toUpperCase());
-  const snap = await getDocs(query(col('patients'), orderBy('name'), startAt(cap), endAt(`${cap}`), limit(10)));
+  const snap = await getDocs(query(col('patients'), where('hospitalIds', 'array-contains', H()), orderBy('name'), startAt(cap), endAt(`${cap}`), limit(10)));
   return snap.docs.map((d) => ({ ...d.data(), id: d.id }));
 }
 
 export async function searchByKey(name, term, extra = []) {
   const k = keyOf(term);
   if (k.length < 1) return [];
-  const snap = await getDocs(query(col(name), ...extra, orderBy('nameKey'), startAt(k), endAt(`${k}`), limit(15)));
+  const snap = await getDocs(scoped(name, ...extra, orderBy('nameKey'), startAt(k), endAt(`${k}`), limit(15)));
   return snap.docs.map((d) => ({ ...d.data(), id: d.id }));
 }
 
 export async function batchesOf(drugId) {
-  const snap = await getDocs(query(col('stockBatches'), where('drugId', '==', drugId), where('qty', '>', 0), limit(50)));
+  const snap = await getDocs(scoped('stockBatches', where('drugId', '==', drugId), where('qty', '>', 0), limit(50)));
   return snap.docs.map((d) => ({ ...d.data(), id: d.id }));
 }
 
@@ -95,7 +98,7 @@ export async function createInvoice({ kind, desk, patient, lines, admissionId = 
   }
   const bill = computeBill(allocated);
   const ref = doc(col('invoices'));
-  const counterRef = doc(db, 'counters', `inv_${kind}_${desk}_${fy}`);
+  const counterRef = doc(db, 'counters', `${H()}_inv_${kind}_${desk}_${fy}`);
   const result = await runTransaction(db, async (tx) => {
     const counter = await tx.get(counterRef);
     const batchSnaps = [];
@@ -109,7 +112,7 @@ export async function createInvoice({ kind, desk, patient, lines, admissionId = 
     const data = {
       number: invoiceNumber(kind, desk, fy, seq), kind, desk, fy, date,
       patientId: patient.id ?? null, patientName: patient.name ?? 'Walk-in', phone: patient.phone ?? '',
-      admissionId, ...bill, paid: paidNow, due, status, createdBy: me(), createdAt: serverTimestamp(),
+      admissionId, ...bill, paid: paidNow, due, status, createdBy: me(), createdAt: serverTimestamp(), hospitalId: H(), updatedBy: auth.currentUser.uid,
     };
     tx.set(counterRef, { next: seq + 1 }, { merge: true });
     for (const [l, p] of batchSnaps) {
@@ -128,7 +131,7 @@ export async function createInvoice({ kind, desk, patient, lines, admissionId = 
 
 const receipt = (inv, invoiceId, amount, mode, ref, type) => ({
   invoiceId, number: inv.number, kind: inv.kind, patientName: inv.patientName, admissionId: inv.admissionId ?? null,
-  amount: Number(amount), mode, ref: ref ?? '', type, date: todayYmd(), by: me(), uid: auth.currentUser.uid, at: serverTimestamp(),
+  amount: Number(amount), mode, ref: ref ?? '', type, date: todayYmd(), by: me(), uid: auth.currentUser.uid, at: serverTimestamp(), hospitalId: H(),
 });
 
 /** Records a payment (or partial payment) against an invoice. */
@@ -141,7 +144,7 @@ export async function addPayment(invoiceId, amount, mode, ref = '') {
     if (inv.status === 'Cancelled') throw new Error('Invoice is cancelled');
     if (a > inv.due + 0.001) throw new Error(`Only ₹${inv.due} is due`);
     const paid = Math.round((inv.paid + a) * 100) / 100;
-    tx.update(invRef, { paid, ...payState(inv.total, paid) });
+    tx.update(invRef, { paid, ...payState(inv.total, paid), updatedBy: auth.currentUser.uid });
     tx.set(doc(col('receipts')), receipt(inv, invoiceId, a, mode, ref, 'Payment'));
   });
   logAudit('Billing', 'Recorded Payment', 'Billing', `₹${a} ${mode} on invoice ${invoiceId}`);
@@ -157,14 +160,14 @@ export async function cancelInvoice(invoiceId, reason, refundMode = 'Cash') {
       tx.update(doc(db, 'stockBatches', p.batchId), { qty: increment(p.qty) });
       tx.update(doc(db, 'drugs', l.drugId), { stock: increment(p.qty) });
     }
-    tx.update(invRef, { status: 'Cancelled', due: 0, cancelReason: reason, cancelledBy: me() });
+    tx.update(invRef, { status: 'Cancelled', due: 0, cancelReason: reason, cancelledBy: me(), updatedBy: auth.currentUser.uid });
     if (inv.paid > 0) tx.set(doc(col('receipts')), receipt(inv, invoiceId, -inv.paid, refundMode, reason, 'Refund'));
   });
   logAudit('Billing', 'Cancelled Invoice', 'Billing', `${invoiceId}: ${reason}`);
 }
 
 /** WhatsApp click-to-chat summary of an invoice (no medical details). */
-export function invoiceWhatsApp(inv, hospital = 'ABC Hospital') {
+export function invoiceWhatsApp(inv, hospital = tenant.hospital?.name ?? 'ABC Hospital') {
   let digits = (inv.phone ?? '').replace(/\D/g, '');
   if (digits.length === 10) digits = `91${digits}`;
   if (digits.length < 11) return null;
@@ -182,13 +185,13 @@ export async function saveDrug(id, d) {
   const data = { ...d, nameKey: keyOf(d.name), mrp: Number(d.mrp), gstRate: Number(d.gstRate), reorderLevel: Number(d.reorderLevel || 0) };
   await runTransaction(db, async (tx) => {
     const ref = id ? doc(db, 'drugs', id) : doc(col('drugs'));
-    tx.set(ref, id ? data : { ...data, stock: 0 }, { merge: true });
+    tx.set(ref, id ? data : { ...data, stock: 0, hospitalId: H() }, { merge: true });
   });
 }
 
 export async function saveSupplier(id, s) {
   const ref = id ? doc(db, 'suppliers', id) : doc(col('suppliers'));
-  await runTransaction(db, async (tx) => tx.set(ref, { ...s, nameKey: keyOf(s.name), ...(id ? {} : { due: 0 }) }, { merge: true }));
+  await runTransaction(db, async (tx) => tx.set(ref, { ...s, nameKey: keyOf(s.name), ...(id ? {} : { due: 0, hospitalId: H() }) }, { merge: true }));
 }
 
 /** Purchase / GRN: adds a stock batch per line and the bill to the supplier's balance. */
@@ -201,13 +204,13 @@ export async function savePurchase({ supplier, billNo, date, lines, paid = 0 }) 
       const units = Number(l.qty) + Number(l.free || 0);
       tx.set(doc(col('stockBatches')), {
         drugId: l.drugId, drugName: l.name, batch: l.batch, expiry: l.expiry, qty: units,
-        purchaseRate: Number(l.rate), mrp: Number(l.mrp), supplierId: supplier.id, purchaseId: purchaseRef.id,
+        purchaseRate: Number(l.rate), mrp: Number(l.mrp), supplierId: supplier.id, purchaseId: purchaseRef.id, hospitalId: H(),
       });
       tx.update(doc(db, 'drugs', l.drugId), { stock: increment(units), mrp: Number(l.mrp) });
     }
     tx.set(purchaseRef, {
       supplierId: supplier.id, supplierName: supplier.name, billNo, date, lines, total,
-      paid: Number(paid), due: total - Number(paid), createdBy: me(), createdAt: serverTimestamp(),
+      paid: Number(paid), due: total - Number(paid), createdBy: me(), createdAt: serverTimestamp(), hospitalId: H(),
     });
     tx.update(doc(db, 'suppliers', supplier.id), { due: increment(total - Number(paid)) });
   });
@@ -218,10 +221,10 @@ export async function savePurchase({ supplier, billNo, date, lines, paid = 0 }) 
 export async function saveWard(w) {
   const wardRef = doc(col('wards'));
   await runTransaction(db, async (tx) => {
-    tx.set(wardRef, { name: w.name, type: w.type, ratePerDay: Number(w.ratePerDay) });
+    tx.set(wardRef, { name: w.name, type: w.type, ratePerDay: Number(w.ratePerDay), hospitalId: H() });
     for (let i = 1; i <= Number(w.beds); i++) {
       tx.set(doc(col('beds')), { wardId: wardRef.id, wardName: w.name, wardType: w.type, ratePerDay: Number(w.ratePerDay),
-        label: `${w.prefix || w.name.slice(0, 3).toUpperCase()}-${String(i).padStart(2, '0')}`, status: 'Free', admissionId: null });
+        label: `${w.prefix || w.name.slice(0, 3).toUpperCase()}-${String(i).padStart(2, '0')}`, status: 'Free', admissionId: null, hospitalId: H() });
     }
   });
 }
@@ -236,12 +239,12 @@ export async function admit({ patient, bed, doctor, department, diagnosis, advan
     tx.set(ref, {
       patientId: patient.id ?? null, patientName: patient.name, phone: patient.phone ?? '', doctor, department, diagnosis,
       bedId: bed.id, bedLabel: bed.label, wardName: bed.wardName, wardType: bed.wardType, ratePerDay: bed.ratePerDay,
-      admittedAt: Timestamp.now(), date: todayYmd(), status: 'Admitted', advance: Number(advance), createdBy: me(),
+      admittedAt: Timestamp.now(), date: todayYmd(), status: 'Admitted', advance: Number(advance), createdBy: me(), hospitalId: H(),
     });
     if (advance > 0) {
       tx.set(doc(col('receipts')), {
         admissionId: ref.id, invoiceId: null, number: null, kind: 'IPD', patientName: patient.name, amount: Number(advance),
-        mode, ref: '', type: 'Advance', date: todayYmd(), by: me(), uid: auth.currentUser.uid, at: serverTimestamp(),
+        mode, ref: '', type: 'Advance', date: todayYmd(), by: me(), uid: auth.currentUser.uid, at: serverTimestamp(), hospitalId: H(),
       });
     }
   });
@@ -287,7 +290,7 @@ export async function collectionReport(from, to) {
   const modes = ['Cash', 'UPI', 'Card', 'Insurance'];
   const base = [where('date', '>=', from), where('date', '<=', to)];
   const byMode = await Promise.all(modes.map(async (m) => {
-    const a = await getAggregateFromServer(query(col('receipts'), ...base, where('mode', '==', m)), { amount: sum('amount'), n: count() });
+    const a = await getAggregateFromServer(scoped('receipts', ...base, where('mode', '==', m)), { amount: sum('amount'), n: count() });
     return { mode: m, ...a.data() };
   }));
   const kinds = ['OPD', 'IPD', 'PHARMACY'];
@@ -298,8 +301,8 @@ export async function collectionReport(from, to) {
     ...(await getAggregateFromServer(q, { cgst: fields.cgst, sgst: fields.sgst, taxable: fields.taxable })).data(),
   });
   const byKind = await Promise.all(kinds.map(async (k) => {
-    const all = await agg(query(col('invoices'), ...base, where('kind', '==', k)));
-    const cancelled = await agg(query(col('invoices'), ...base, where('kind', '==', k), where('status', '==', 'Cancelled')));
+    const all = await agg(scoped('invoices', ...base, where('kind', '==', k)));
+    const cancelled = await agg(scoped('invoices', ...base, where('kind', '==', k), where('status', '==', 'Cancelled')));
     // Cancelled invoices keep their number (GST series has no gaps) but don't count as revenue.
     const net = Object.fromEntries(Object.keys(fields).map((f) => [f, Math.round(((all[f] ?? 0) - (cancelled[f] ?? 0)) * 100) / 100]));
     return { kind: k, ...net, cancelled: cancelled.n };

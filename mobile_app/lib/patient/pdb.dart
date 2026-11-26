@@ -16,7 +16,9 @@ import '../ui.dart';
 ///   bookedSlots/{doctorId}_{date} {times}: taken slots, readable without seeing other patients' bookings
 ///   appointments/{id}/messages    consultation chat
 ///   doctors/{id}/reviews/{apptId} verified reviews (one per completed appointment)
-///   medicines, labTests, articles catalogs;  orders/{id} {ownerUid, kind: medicine|lab, items, status}
+///   medicines, labTests, articles catalogs;  orders/{id} {ownerUid, hospitalId, kind: medicine|lab, items, status}
+///   patients/{id}.hospitalIds     hospitals the patient has booked with (added by the booking function); each
+///                                 hospital sees the profile but only its own records and bills
 final _fs = FirebaseFirestore.instance;
 
 /// Symptom → specialty guidance shown on the home screen (names match the doctor app's specialization list).
@@ -126,7 +128,7 @@ class PDb {
       .snapshots()
       .map((s) => s.docs.map(Appt.of).toList()..sort((a, b) => b.start.compareTo(a.start)));
 
-  static Future<void> cancel(String id) => appointments.doc(id).update({'status': 'Cancelled'});
+  static Future<void> cancel(String id) => appointments.doc(id).update({'status': 'Cancelled', 'updatedBy': uid});
 
   static Future<void> review(Appt a, int rating, String text, String name) =>
       doctors.doc(a.data['doctorId'] as String).collection('reviews').doc(a.id).set({
@@ -160,7 +162,16 @@ class PDb {
       .snapshots()
       .map((s) => s.docs.map((d) => d.data()).toList());
 
-  static Future<void> uploadRecord(String patientId, {required String type, required String title, String notes = '', Uint8List? bytes, String? fileName}) async {
+  /// Hospitals this family member has visited, as id → name (to share an uploaded report with one of them).
+  static Future<Map<String, String>> hospitalsOf(String patientId) async {
+    final ids = List<String>.from((await patients.doc(patientId).get()).data()?['hospitalIds'] ?? []);
+    final docs = await Future.wait(ids.map((id) => _fs.doc('hospitals/$id').get()));
+    return {for (final d in docs) d.id: d.data()?['name'] as String? ?? d.id};
+  }
+
+  /// [hospitalId] '' keeps the upload private to the family; a hospital id shares it with that hospital's doctors.
+  static Future<void> uploadRecord(String patientId,
+      {required String type, required String title, String notes = '', Uint8List? bytes, String? fileName, String hospitalId = ''}) async {
     var attachment = <String, dynamic>{};
     if (bytes != null) {
       final ref = FirebaseStorage.instance.ref('records/$patientId/${DateTime.now().millisecondsSinceEpoch}_$fileName');
@@ -174,6 +185,7 @@ class PDb {
       ...attachment,
       'uploadedBy': uid,
       'doctor': 'Uploaded by patient',
+      'hospitalId': hospitalId,
       'createdAt': FieldValue.serverTimestamp(),
     });
   }
@@ -188,11 +200,23 @@ class PDb {
     return ref.getDownloadURL();
   }
 
+  /// Hospital that fulfils a medicine / lab order: the latest hospital the patient booked with, else the first active one.
+  /// ponytail: no chooser; add one when patients regularly use several hospitals' pharmacies.
+  static Future<String> orderHospital() async {
+    final mine = List<String>.from((await me.get()).data()?['hospitalIds'] ?? []);
+    if (mine.isNotEmpty) return mine.last;
+    final any = await _fs.collection('hospitals').where('status', isEqualTo: 'Active').limit(1).get();
+    if (any.docs.isEmpty) throw Exception('No pharmacy is available yet');
+    return any.docs.first.id;
+  }
+
   static Future<void> placeOrder({required String kind, required List<Json> items, required String patientName,
       required String phone, required String address, String? date, String? slot, String? prescriptionUrl}) async {
     final total = items.fold<num>(0, (t, i) => t + (i['price'] as num) * ((i['qty'] as num?) ?? 1));
+    final hospitalId = await orderHospital();
     await orders.add({
       'ownerUid': uid,
+      'hospitalId': hospitalId,
       'email': FirebaseAuth.instance.currentUser?.email,
       'kind': kind,
       'items': items,

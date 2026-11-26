@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Mic, MicOff, PhoneCall, Send, Volume2 } from 'lucide-react';
 import { httpsCallable } from 'firebase/functions';
 import { collection, limit, onSnapshot, orderBy, query } from 'firebase/firestore';
-import { db, firebaseEnabled, functions } from '../firebase';
+import { db, firebaseEnabled, functions, scope, tenant } from '../firebase';
 
 const LANGS = [
   ['en', 'English', 'en-IN'], ['ta', 'தமிழ்', 'ta-IN'], ['te', 'తెలుగు', 'te-IN'],
@@ -30,7 +30,7 @@ export default function VoiceAgent() {
   const [open, setOpen] = useState(null);
   useEffect(() => {
     if (!firebaseEnabled) return undefined;
-    return onSnapshot(query(collection(db, 'voiceCalls'), orderBy('updatedAt', 'desc'), limit(50)),
+    return onSnapshot(query(collection(db, 'voiceCalls'), ...scope('voiceCalls'), orderBy('updatedAt', 'desc'), limit(50)),
       (s) => setCalls(s.docs.map((d) => ({ ...d.data(), id: d.id }))), (e) => console.error('voiceCalls', e));
   }, []);
   const today = new Date().toLocaleDateString('en-CA');
@@ -126,7 +126,7 @@ function VoiceDemo() {
   const send = async (input, id = session) => {
     setBusy(true);
     try {
-      const { data } = await httpsCallable(functions, 'voiceTurn')({ sessionId: id, phone, ...input });
+      const { data } = await httpsCallable(functions, 'voiceTurn')({ sessionId: id, phone, hospitalId: tenant.hospitalId, ...input });
       setLines((l) => [...l, ...(input.speech || input.digits ? [{ who: 'caller', text: input.speech || `pressed ${input.digits}` }] : []),
         ...data.prompts.map((p) => ({ who: 'agent', text: p.text, lang: p.lang }))]);
       setLang(data.lang);

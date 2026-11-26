@@ -6,7 +6,7 @@ import 'package:intl/intl.dart';
 import 'config.dart';
 
 /// Firestore schema shared with the React portal (see ../firestore.rules):
-///   users/{uid}                 {role}
+///   users/{uid}                 {role, hospitalId, active}  (doctors belong to one hospital)
 ///   doctors/{uid}               profile (+ web fields: department, specialization, qualification…)
 ///   patients/{id}               demographics;  patients/{id}/records/{rid}  medical records
 ///   appointments/{id}           {patient, patientId, patientPhone, doctor, doctorId, date: yyyy-MM-dd,
@@ -17,6 +17,13 @@ import 'config.dart';
 ///   bookedSlots/{doctorId}_{date} {times}  taken slots, read by the patient app (see patient/pdb.dart)
 final _fs = FirebaseFirestore.instance;
 String get uid => FirebaseAuth.instance.currentUser!.uid;
+
+/// The signed-in doctor's hospital (users/{uid}.hospitalId), set by the role gate before the doctor app opens.
+/// Every hospital-owned read is filtered by it and every write carries it (see firestore.rules).
+String hospitalId = '';
+
+/// Fields every audited staff write carries: the writer, for the hospital's change history.
+Json get by => {'updatedBy': uid};
 
 typedef Json = Map<String, dynamic>;
 
@@ -90,11 +97,23 @@ class Db {
   static DocumentReference<Json> schedule([String? id]) => _fs.doc('schedules/${id ?? uid}');
   static CollectionReference<Json> get notifications => _fs.collection('notifications');
 
+  /// Self sign-up: a locked doctor account; the doctor then names their hospital ([joinHospital]) and its admin approves.
   static Future<void> createAccount({required String name, required String email, required String phone}) async {
     final batch = _fs.batch()
-      ..set(_fs.doc('users/$uid'), {'role': 'doctor', 'email': email, ...consentRecord()}, SetOptions(merge: true))
+      ..set(_fs.doc('users/$uid'), {'role': 'doctor', 'email': email, 'name': name, 'active': false, ...consentRecord()}, SetOptions(merge: true))
       ..set(doctor(), {'name': name, 'email': email, 'phone': phone, 'profileComplete': false, 'status': 'Active'}, SetOptions(merge: true));
     await batch.commit();
+  }
+
+  /// Asks to join the hospital with code [code] (its id, given by the hospital admin). Returns its name.
+  static Future<String> joinHospital(String code) async {
+    final h = await _fs.doc('hospitals/${code.trim()}').get();
+    if (!h.exists) throw Exception('No hospital with code "${code.trim()}". Ask your hospital admin for the code.');
+    final name = h.data()?['name'] as String? ?? code;
+    // users first: the doctors write is checked against the hospital on users/{uid}.
+    await _fs.doc('users/$uid').update({'hospitalId': h.id});
+    await doctor().set({'hospitalId': h.id, 'hospital': name}, SetOptions(merge: true));
+    return name;
   }
 
   static Future<void> saveProfile(Json p) {
@@ -118,10 +137,10 @@ class Db {
     final t = term.trim();
     if (t.length < 2) return [];
     final q = RegExp(r'^[+\d\s-]{6,}$').hasMatch(t)
-        ? patients.where('phone', isEqualTo: t)
+        ? patients.where('hospitalIds', arrayContains: hospitalId).where('phone', isEqualTo: t)
         : () {
             final cap = t.split(' ').map((w) => w.isEmpty ? w : w[0].toUpperCase() + w.substring(1)).join(' ');
-            return patients.orderBy('name').startAt([cap]).endAt(['$cap']);
+            return patients.where('hospitalIds', arrayContains: hospitalId).orderBy('name').startAt([cap]).endAt(['$cap']);
           }();
     final snap = await q.limit(20).get();
     return snap.docs.map((d) => {...d.data(), 'id': d.id}).toList();
@@ -130,15 +149,18 @@ class Db {
   static Stream<List<Appt>> _list(Query<Json> q) =>
       q.snapshots().map((s) => s.docs.map(Appt.of).toList()..sort((a, b) => a.start.compareTo(b.start)));
 
-  static Stream<List<Appt>> myDay(String date) =>
-      _list(appointments.where('doctorId', isEqualTo: uid).where('date', isEqualTo: date));
+  /// This hospital's appointments (the rules only allow queries filtered by hospitalId).
+  static Query<Json> get ours => appointments.where('hospitalId', isEqualTo: hospitalId);
 
-  static Stream<List<Appt>> myRange(String from, String to) => _list(appointments
+  static Stream<List<Appt>> myDay(String date) =>
+      _list(ours.where('doctorId', isEqualTo: uid).where('date', isEqualTo: date));
+
+  static Stream<List<Appt>> myRange(String from, String to) => _list(ours
       .where('doctorId', isEqualTo: uid)
       .where('date', isGreaterThanOrEqualTo: from)
       .where('date', isLessThanOrEqualTo: to));
 
-  static Stream<List<Appt>> forPatient(String patientId) => _list(appointments.where('patientId', isEqualTo: patientId));
+  static Stream<List<Appt>> forPatient(String patientId) => _list(ours.where('patientId', isEqualTo: patientId));
 
   static Stream<Appt> watch(String id) => appointments.doc(id).snapshots().map(Appt.of);
 
@@ -159,7 +181,7 @@ class Db {
   static Future<List<String>> freeSlots(String date, {String? doctorId}) async {
     final d = await day(date, doctorId: doctorId);
     if (d['available'] == false) return [];
-    final taken = await appointments.where('doctorId', isEqualTo: doctorId ?? uid).where('date', isEqualTo: date).get();
+    final taken = await ours.where('doctorId', isEqualTo: doctorId ?? uid).where('date', isEqualTo: date).get();
     final booked = taken.docs.map(Appt.of).where((a) => a.status != 'Cancelled' && a.status != 'No-Show').map((a) => a.time);
     var slots = generateSlots(List<Map>.from(d['sessions'] ?? []), booked);
     final now = DateTime.now();
@@ -181,7 +203,7 @@ class Db {
     required String visitType,
   }) async {
     final me = (await doctor().get()).data() ?? {};
-    final pid = patientId ?? (await patients.add({'name': patientName, 'phone': phone, 'status': 'Active', ...extraPatient})).id;
+    final pid = patientId ?? (await patients.add({'name': patientName, 'phone': phone, 'status': 'Active', ...extraPatient, 'hospitalIds': [hospitalId], ...by})).id;
     final ref = appointments.doc();
     final data = await _fs.runTransaction((tx) async {
       // Per-doctor daily OPD token (#1, #2 …) + slot lock, shared with the portal and the patient app.
@@ -208,6 +230,9 @@ class Db {
         'status': 'Confirmed',
         'token': token,
         'createdAt': FieldValue.serverTimestamp(),
+        'hospitalId': hospitalId,
+        'hospital': me['hospital'] ?? '',
+        ...by,
       };
       tx.set(counter, {'next': token + 1}, SetOptions(merge: true));
       tx.set(slotRef, {'times': FieldValue.arrayUnion([time])}, SetOptions(merge: true));
@@ -218,10 +243,10 @@ class Db {
     return Appt(ref.id, data);
   }
 
-  static Future<void> setStatus(String id, String status) => appointments.doc(id).update({'status': status});
+  static Future<void> setStatus(String id, String status) => appointments.doc(id).update({'status': status, ...by});
 
   static Future<void> reschedule(Appt a, String date, String time) async {
-    await appointments.doc(a.id).update({'date': date, 'time': time, 'status': 'Rescheduled'});
+    await appointments.doc(a.id).update({'date': date, 'time': time, 'status': 'Rescheduled', ...by});
     // ponytail: the old slot stays blocked for patient self-booking; free it here if clinics complain.
     await _fs.doc('bookedSlots/${uid}_$date').set({'times': FieldValue.arrayUnion([time])}, SetOptions(merge: true));
     await notify('Appointment rescheduled', '${a.patient} moved to ${shortLabel(date)} $time');
@@ -231,7 +256,7 @@ class Db {
   static Future<void> complete(Appt a, {required String diagnosis, required String notes, required List<Json> medications}) async {
     final me = (await doctor().get()).data() ?? {};
     final summary = {'diagnosis': diagnosis, 'notes': notes, 'medications': medications};
-    final batch = _fs.batch()..update(appointments.doc(a.id), {'status': 'Completed', 'summary': summary, 'completedAt': FieldValue.serverTimestamp()});
+    final batch = _fs.batch()..update(appointments.doc(a.id), {'status': 'Completed', 'summary': summary, 'completedAt': FieldValue.serverTimestamp(), ...by});
     if (a.patientId != null) {
       batch.set(records(a.patientId!).doc(), {
         'type': 'Consultation',
@@ -242,6 +267,8 @@ class Db {
         'doctorId': uid,
         'appointmentId': a.id,
         'createdAt': FieldValue.serverTimestamp(),
+        'hospitalId': hospitalId,
+        ...by,
       });
     }
     await batch.commit();
@@ -259,6 +286,7 @@ class Db {
         'action': action,
         'module': module,
         'details': details,
+        'hospitalId': hospitalId,
       }).then((_) {}, onError: (Object e) => debugPrint('audit log: $e'));
 
   static String shortLabel(String date) => DateFormat('EEE, MMM d').format(DateTime.parse(date));

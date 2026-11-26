@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { BedDouble } from 'lucide-react';
 import { doc, updateDoc } from 'firebase/firestore';
 import { db } from '../../firebase';
-import { addCharge, admit, col, discharge, dischargeLines, limit, orderBy, query, saveWard, searchByKey, useQueryDocs, where } from '../../hms';
+import { addCharge, admit, col, discharge, dischargeLines, limit, orderBy, query, saveWard, searchByKey, useQueryDocs, where, scoped } from '../../hms';
 import { BillComposer, inr, InvoiceModal, Modal, PatientPicker, SearchBox, Tabs, useDesk } from './common';
 
 const WARD_TYPES = ['General', 'Semi-private', 'Private', 'Deluxe', 'ICU', 'NICU', 'HDU'];
@@ -20,8 +20,8 @@ export default function Ipd({ doctors, isAdmin, canBill }) {
   const [ward, setWard] = useState(null);
   const [error, setError] = useState('');
 
-  const beds = useQueryDocs(() => query(col('beds'), orderBy('label'), limit(1000)), []);
-  const admitted = useQueryDocs(() => query(col('admissions'), where('status', '==', 'Admitted'), orderBy('admittedAt', 'desc'), limit(500)), []);
+  const beds = useQueryDocs(() => scoped('beds', orderBy('label'), limit(1000)), []);
+  const admitted = useQueryDocs(() => scoped('admissions', where('status', '==', 'Admitted'), orderBy('admittedAt', 'desc'), limit(500)), []);
   const charges = useQueryDocs(() => current ? query(col(`admissions/${current.id}/charges`), orderBy('at'), limit(500)) : null, [current?.id]);
   const byWard = beds.docs.reduce((m, b) => ({ ...m, [b.wardName]: [...(m[b.wardName] ?? []), b] }), {});
   const free = beds.docs.filter((b) => b.status === 'Free').length;

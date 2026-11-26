@@ -2,8 +2,22 @@ rules_version = '2';
 
 service firebase.storage {
   match /b/{bucket}/o {
-    function role() {
-      return firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data.role;
+    function profile() {
+      return firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data;
+    }
+    function patient(patientId) {
+      return firestore.get(/databases/(default)/documents/patients/$(patientId)).data;
+    }
+    function ownsPatient(patientId) {
+      return patient(patientId).get('ownerUid', '') == request.auth.uid;
+    }
+    // Enabled clinical staff of a hospital this patient has visited, or the platform owner.
+    // ponytail: no hospital-suspension check here (one more read per file); Firestore rules block the records themselves.
+    function clinicalFor(patientId) {
+      return profile().role == 'super_admin'
+        || (profile().role in ['admin', 'hospital_admin', 'doctor', 'nurse', 'receptionist', 'lab_tech']
+            && profile().get('active', true) == true
+            && profile().get('hospitalId', '') in patient(patientId).get('hospitalIds', []));
     }
 
     // Doctor profile photos
@@ -14,23 +28,18 @@ service firebase.storage {
         && request.resource.contentType.matches('image/.*');
     }
 
-    function ownsPatient(patientId) {
-      return firestore.get(/databases/(default)/documents/patients/$(patientId)).data.ownerUid == request.auth.uid;
-    }
-
     // Lab reports, scans and prescriptions attached to medical records (patients: their own family's)
     match /records/{patientId}/{file=**} {
-      allow read: if request.auth != null
-        && (role() in ['admin', 'hospital_admin', 'doctor', 'receptionist'] || ownsPatient(patientId));
-      allow write: if request.auth != null
-        && (role() in ['admin', 'hospital_admin', 'doctor', 'receptionist'] || ownsPatient(patientId))
+      allow read: if request.auth != null && (clinicalFor(patientId) || ownsPatient(patientId));
+      allow write: if request.auth != null && (clinicalFor(patientId) || ownsPatient(patientId))
         && request.resource.size < 20 * 1024 * 1024;
     }
 
-    // Prescriptions uploaded with medicine orders: the patient writes, staff read.
+    // Prescriptions uploaded with medicine orders: the patient writes, pharmacy-side staff read.
+    // ponytail: any hospital's staff can read by path; nest under the order's hospitalId if that matters.
     match /prescriptions/{uid}/{file=**} {
       allow read: if request.auth != null
-        && (request.auth.uid == uid || role() in ['admin', 'hospital_admin', 'doctor', 'receptionist', 'billing']);
+        && (request.auth.uid == uid || profile().role in ['super_admin', 'admin', 'hospital_admin', 'doctor', 'receptionist', 'billing', 'pharmacist']);
       allow write: if request.auth != null && request.auth.uid == uid && request.resource.size < 10 * 1024 * 1024;
     }
   }

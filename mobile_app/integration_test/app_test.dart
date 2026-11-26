@@ -25,6 +25,15 @@ Future<String> emulatorDoc(String path) async =>
             headers: {'Authorization': 'Bearer owner'}))
         .body;
 
+/// Raw emulator REST update of [fields] (Firestore JSON) on [path], as the hospital admin's approval would do.
+Future<void> emulatorPatch(String path, Map<String, Object> fields) async {
+  final mask = fields.keys.map((k) => 'updateMask.fieldPaths=$k').join('&');
+  await http.patch(Uri.parse('http://127.0.0.1:8181/v1/projects/demo-medical-ai/databases/(default)/documents/$path?$mask'),
+      headers: {'Authorization': 'Bearer owner', 'Content-Type': 'application/json'}, body: jsonEncode({'fields': fields}));
+}
+
+const hospital = 'city-general'; // seeded by scripts/seed-emulator.mjs
+
 /// flutter drive (web) reports a test that exceeds its timeout as PASSED, so every await that could
 /// hang gets its own deadline and fails loudly with what it was waiting for.
 Future<T> within<T>(String what, Future<T> f, {int seconds = 45}) =>
@@ -155,9 +164,17 @@ void main() {
     await tap(t, find.byType(CheckboxListTile));
     await tap(t, find.textContaining('Create Account'));
 
+    // --- Join the hospital by its code; locked until the hospital admin approves (done here via the emulator) ---
+    await pumpUntil(t, find.text('Join your hospital'), seconds: 30);
+    final uid = FirebaseAuth.instance.currentUser!.uid;
+    await type(t, 'Hospital code', hospital);
+    await tap(t, find.text('Request to join'));
+    await pumpUntil(t, find.textContaining('Request sent to hospital'), seconds: 30);
+    expect(await within('emulatorDoc(users/uid)', emulatorDoc('users/$uid')), allOf(contains('"$hospital"'), contains('"active"')));
+    await within('approve doctor', emulatorPatch('users/$uid', {'active': {'booleanValue': true}}));
+
     // --- First-time profile ---
     await pumpUntil(t, find.text('Complete your profile to continue.'), seconds: 30);
-    final uid = FirebaseAuth.instance.currentUser!.uid;
     await pickFromSheet(t, 'Education', 'MBBS');
     await pickFromSheet(t, 'Specialization', 'General Physician');
     await type(t, 'Hospital Name', 'Apollo Hospitals, Greams Road');
@@ -171,6 +188,7 @@ void main() {
     final doctor = (await within('FirebaseFirestore.instance.doc(doctors/uid).get(server)', FirebaseFirestore.instance.doc('doctors/$uid').get(server))).data()!;
     expect(doctor['profileComplete'], true);
     expect(doctor['department'], 'General Physician'); // field the web portal reads
+    expect(doctor['hospitalId'], hospital);
     final role = (await within('FirebaseFirestore.instance.doc(users/uid).get(server)', FirebaseFirestore.instance.doc('users/$uid').get(server))).data()!['role'];
     expect(role, 'doctor');
 
@@ -187,7 +205,7 @@ void main() {
     await tap(t, find.widgetWithText(FilledButton, 'Book Appointment').hitTestable());
     await pumpUntil(t, find.textContaining('Booked · Token #'));
 
-    final appts = await within('FirebaseFirestore.instance.collection(appointments).where(doctorId, isEqualTo: uid).ge', FirebaseFirestore.instance.collection('appointments').where('doctorId', isEqualTo: uid).get(server));
+    final appts = await within('FirebaseFirestore.instance.collection(appointments).where(doctorId, isEqualTo: uid).ge', FirebaseFirestore.instance.collection('appointments').where('hospitalId', isEqualTo: hospital).where('doctorId', isEqualTo: uid).get(server));
     expect(appts.docs, hasLength(1));
     final appt = appts.docs.single;
     expect(appt['date'], ymd(day));
@@ -199,7 +217,7 @@ void main() {
     expect(await within('emulatorDoc(appointments/{appt.id})', emulatorDoc('appointments/${appt.id}')), contains('"Confirmed"'), reason: 'appointment missing on the emulator');
 
     // --- Same slot must no longer be offered ---
-    final slots = await within('FirebaseFirestore.instance.collection(appointments).where(doctorId, isEqualTo: uid).wh', FirebaseFirestore.instance.collection('appointments').where('doctorId', isEqualTo: uid).where('date', isEqualTo: ymd(day)).get(server));
+    final slots = await within('FirebaseFirestore.instance.collection(appointments).where(doctorId, isEqualTo: uid).wh', FirebaseFirestore.instance.collection('appointments').where('hospitalId', isEqualTo: hospital).where('doctorId', isEqualTo: uid).where('date', isEqualTo: ymd(day)).get(server));
     expect(slots.docs.map((d) => d['time']), contains('09:00 AM'));
 
     // --- Check in → start → complete with a prescription ---
@@ -225,13 +243,20 @@ void main() {
     expect(done['status'], 'Completed');
     expect((done['summary'] as Map)['diagnosis'], 'Hypertension stage 1');
     expect(((done['summary'] as Map)['medications'] as List).single['name'], 'Amlodipine 5mg');
+    expect(done['updatedBy'], uid, reason: 'audited writes name the writer');
+    // Change history: the auditAppointments function logged who completed it (functions emulator).
+    for (var i = 0; i < 40 && !(await emulatorDoc('auditLogs?pageSize=500')).contains('appointments/${appt.id}'); i++) {
+      await within('wait for audit trail', Future<void>.delayed(const Duration(milliseconds: 500)));
+    }
+    expect(await within('emulatorDoc(auditLogs)', emulatorDoc('auditLogs?pageSize=500')),
+        allOf(contains('appointments/${appt.id}'), contains('Completed')));
 
     await tap(t, find.text('View Summary'));
     await pumpUntil(t, find.text('Amlodipine 5mg'));
     await scrollTo(t, find.text('Generate Digital Prescription'));
 
     // --- Medical records: the consultation landed in the patient's records; add a vitals record ---
-    var records = await within('FirebaseFirestore.instance.collection(patients/patientId/records).get(server)', FirebaseFirestore.instance.collection('patients/$patientId/records').get(server));
+    var records = await within('FirebaseFirestore.instance.collection(patients/patientId/records).get(server)', FirebaseFirestore.instance.collection('patients/$patientId/records').where('hospitalId', isEqualTo: hospital).get(server));
     expect(records.docs.single['type'], 'Consultation');
     expect(records.docs.single['doctorId'], uid);
 
@@ -248,7 +273,7 @@ void main() {
     await tap(t, find.text('Save Record').hitTestable());
     await pumpUntil(t, find.text('BP check'), seconds: 30);
 
-    records = await within('FirebaseFirestore.instance.collection(patients/patientId/records).get(server)', FirebaseFirestore.instance.collection('patients/$patientId/records').get(server));
+    records = await within('FirebaseFirestore.instance.collection(patients/patientId/records).get(server)', FirebaseFirestore.instance.collection('patients/$patientId/records').where('hospitalId', isEqualTo: hospital).get(server));
     expect(records.docs, hasLength(2));
     final vitals = records.docs.firstWhere((d) => d['type'] == 'Vitals');
     expect((vitals['vitals'] as Map)['bp'], '138/88');
@@ -298,6 +323,9 @@ void main() {
     expect(mine.docs.single['patientId'], puid);
     expect(mine.docs.single['time'], '09:30 AM');
     expect(mine.docs.single['token'], 2, reason: "per-doctor daily token: the doctor's own booking that day was #1");
+    expect(mine.docs.single['hospitalId'], hospital);
+    expect(await within('emulatorDoc(patients/puid)', emulatorDoc('patients/$puid')), contains('"$hospital"'),
+        reason: 'booking shares the profile with the hospital');
     expect(await within('emulatorDoc(bookedSlots/{uid}_{ymd(day)})', emulatorDoc('bookedSlots/${uid}_${ymd(day)}')), allOf(contains('09:00 AM'), contains('09:30 AM')));
 
     // Chat with the clinic.
@@ -322,6 +350,7 @@ void main() {
     final orders = await within('FirebaseFirestore.instance.collection(orders).where(ownerUid, isEqualTo: puid).get(ser', FirebaseFirestore.instance.collection('orders').where('ownerUid', isEqualTo: puid).get(server));
     expect(orders.docs, hasLength(1));
     expect(orders.docs.single['status'], 'Placed');
+    expect(orders.docs.single['hospitalId'], hospital, reason: 'order goes to the hospital the patient booked with');
     expect(await within('emulatorDoc(orders/{orders.docs.single.id})', emulatorDoc('orders/${orders.docs.single.id}')), contains('Paracetamol'));
 
     FlutterError.onError = frameworkOnError;

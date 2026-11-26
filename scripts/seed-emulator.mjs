@@ -4,17 +4,29 @@ const AUTH = 'http://127.0.0.1:9099/identitytoolkit.googleapis.com/v1';
 const FS = 'http://127.0.0.1:8181/v1/projects/demo-medical-ai/databases/(default)/documents';
 
 // Emulator-only test logins. Never reuse these anywhere real.
+// Staff belong to hospital 'city-general' (doctors signing up in the app use it as the hospital code).
+const HOSPITAL = 'city-general';
 const ACCOUNTS = [
-  { email: 'admin@demo.test', password: 'demo-admin-123', role: 'admin' },
-  { email: 'reception@demo.test', password: 'demo-recep-123', role: 'receptionist' },
-  { email: 'billing@demo.test', password: 'demo-bill-123', role: 'billing' },
-  { email: 'pharmacy@demo.test', password: 'demo-pharm-123', role: 'pharmacist' },
+  { email: 'owner@demo.test', password: 'demo-owner-123', role: 'super_admin' },
+  { email: 'admin@demo.test', password: 'demo-admin-123', role: 'admin', hospitalId: HOSPITAL },
+  { email: 'reception@demo.test', password: 'demo-recep-123', role: 'receptionist', hospitalId: HOSPITAL },
+  { email: 'billing@demo.test', password: 'demo-bill-123', role: 'billing', hospitalId: HOSPITAL },
+  { email: 'pharmacy@demo.test', password: 'demo-pharm-123', role: 'pharmacist', hospitalId: HOSPITAL },
 ];
 
 if (process.argv.includes('--reset')) {
   await fetch('http://127.0.0.1:8181/emulator/v1/projects/demo-medical-ai/databases/(default)/documents', { method: 'DELETE' });
   await fetch('http://127.0.0.1:9099/emulator/v1/projects/demo-medical-ai/accounts', { method: 'DELETE' });
   console.log('emulator data cleared');
+}
+
+{
+  const w = await fetch(`${FS}/hospitals/${HOSPITAL}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer owner' },
+    body: JSON.stringify({ fields: { name: { stringValue: 'City General Hospital' }, city: { stringValue: 'Chennai' }, status: { stringValue: 'Active' }, plan: { stringValue: 'Enterprise' } } }),
+  });
+  if (!w.ok) throw new Error(`hospital write ${w.status}`);
+  console.log(`seeded hospital     ${HOSPITAL}`);
 }
 
 for (const a of ACCOUNTS) {
@@ -34,7 +46,7 @@ for (const a of ACCOUNTS) {
   // "Bearer owner" bypasses security rules — emulator only.
   const w = await fetch(`${FS}/users/${body.localId}`, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer owner' },
-    body: JSON.stringify({ fields: { role: { stringValue: a.role }, email: { stringValue: a.email } } }),
+    body: JSON.stringify({ fields: { role: { stringValue: a.role }, email: { stringValue: a.email }, ...(a.hospitalId ? { hospitalId: { stringValue: a.hospitalId } } : {}) } }),
   });
   if (!w.ok) throw new Error(`${a.email}: role write ${w.status}`);
   console.log(`seeded ${a.role.padEnd(12)} ${a.email}`);

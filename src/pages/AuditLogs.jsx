@@ -7,12 +7,12 @@ export default function AuditLogs({
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedModule, setSelectedModule] = useState('All');
 
-  const modules = ['All', 'System', 'Doctor Management', 'Patient Management', 'Department Management', 'Appointments', 'IVR & Calls', 'Payments', 'Security & Roles', 'Settings', 'System Health'];
+  const modules = ['All', ...new Set(auditLogs.map((l) => l.module).filter(Boolean))];
 
   const filteredLogs = auditLogs.filter(log => {
     const matchesSearch = log.user.toLowerCase().includes(searchTerm.toLowerCase()) || 
                           log.action.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                          log.details.toLowerCase().includes(searchTerm.toLowerCase());
+                          (log.details ?? '').toLowerCase().includes(searchTerm.toLowerCase());
     
     const matchesModule = selectedModule === 'All' || log.module === selectedModule;
     return matchesSearch && matchesModule;
@@ -23,7 +23,7 @@ export default function AuditLogs({
       <div className="page-header">
         <div className="page-title">
           <h2>Security Audit Logs</h2>
-          <p>Read-only trail recording every critical action, access request, and setting change performed by hospital staff.</p>
+          <p>Read-only trail of every login, logout, record view and change (who changed which field, from what to what) by this hospital's staff.</p>
         </div>
       </div>
 

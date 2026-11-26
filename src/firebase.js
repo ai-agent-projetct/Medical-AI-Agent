@@ -38,13 +38,47 @@ if (app && env.VITE_USE_EMULATORS === 'true') {
 
 // Firestore role → portal role label used by the RBAC matrix in App.jsx.
 export const ROLE_LABELS = {
-  admin: 'Super Admin',
+  super_admin: 'Super Admin',
+  admin: 'Hospital Admin',
   hospital_admin: 'Hospital Admin',
   doctor: 'Doctor',
+  nurse: 'Nurse',
   receptionist: 'Receptionist',
+  lab_tech: 'Lab Technician',
   billing: 'Billing Staff',
   pharmacist: 'Pharmacist',
+  admin_staff: 'Administration',
 };
+// Staff categories a hospital admin can give an account (users/{uid}.role).
+export const STAFF_ROLES = ['hospital_admin', 'doctor', 'nurse', 'receptionist', 'lab_tech', 'billing', 'pharmacist', 'admin_staff'];
+
+/**
+ * Who is signed in and which hospital this portal session works in. Staff are fixed to their own
+ * hospital; the super admin picks one (kept per browser tab) or none for the platform console.
+ * Every hospital-owned read is filtered by it and every write is stamped with it (see firestore.rules).
+ */
+export const tenant = { uid: null, role: null, hospitalId: null, hospital: null, profile: null };
+const PICK = 'superHospital';
+export function pickHospital(hospitalId) {
+  try {
+    if (hospitalId) sessionStorage.setItem(PICK, hospitalId); else sessionStorage.removeItem(PICK);
+  } catch { /* private mode: the pick lasts until reload */ }
+  window.location.reload(); // ponytail: listeners are bound at mount; a reload rebinds them all to the new hospital
+}
+
+// Collections shared by all hospitals; everything else the portal reads is hospital-owned.
+const GLOBAL = new Set(['medicines', 'labTests', 'articles', 'hospitals']);
+/** Query constraints that limit a collection to the current hospital (none for the super admin's "all"). */
+export function scope(name) {
+  if (GLOBAL.has(name) || !tenant.hospitalId) return [];
+  return [name === 'patients' ? where('hospitalIds', 'array-contains', tenant.hospitalId) : where('hospitalId', '==', tenant.hospitalId)];
+}
+/** Fields every portal write carries: owning hospital (new docs) and the writer, for the change history. */
+export function stampFor(name, data, isNew) {
+  if (GLOBAL.has(name)) return data;
+  const owner = name === 'patients' ? { hospitalIds: [tenant.hospitalId] } : { hospitalId: tenant.hospitalId };
+  return { ...data, ...(isNew ? owner : {}), updatedBy: tenant.uid };
+}
 
 const fail = (err) => {
   console.error(err);
@@ -66,10 +100,12 @@ export function useLiveCollection(name, fallback, prepare = (item) => item, cons
   prepareRef.current = prepare;
 
   useEffect(() => {
-    if (!db) return undefined;
+    // The super admin's platform console (no hospital picked) never downloads hospital data.
+    if (!db || (tenant.role === 'super_admin' && !tenant.hospitalId)) return undefined;
     // `constraints` bound what each browser downloads (date window / limit); items outside it are
     // untouched by writes, which only send changed or new items.
-    return onSnapshot(constraints.length ? query(collection(db, name), ...constraints) : collection(db, name),
+    const all = [...scope(name), ...constraints];
+    return onSnapshot(all.length ? query(collection(db, name), ...all) : collection(db, name),
       (snap) => setItems(snap.docs.map((d) => ({ ...d.data(), id: d.id }))),
       (err) => console.error(`${name} listener`, err));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -91,7 +127,7 @@ export function useLiveCollection(name, fallback, prepare = (item) => item, cons
       const old = prevById.get(item.id);
       if (old && JSON.stringify(old) === JSON.stringify(item)) continue;
       Promise.resolve(prepareRef.current(item, !old))
-        .then(({ id, ...data }) => setDoc(doc(db, name, id), data, { merge: true }))
+        .then(({ id, ...data }) => setDoc(doc(db, name, id), stampFor(name, data, !old), { merge: true }))
         .catch(fail);
     }
     setItems(fixed); // optimistic; the snapshot listener confirms
@@ -139,7 +175,7 @@ export async function reserveSlot(doctorId, date, time) {
 }
 
 /** WhatsApp click-to-chat link with the booking confirmation (staff tap Send in WhatsApp). */
-export function whatsappConfirmation(apt, hospital = 'ABC Hospital') {
+export function whatsappConfirmation(apt, hospital = tenant.hospital?.name ?? 'ABC Hospital') {
   const digits = (apt.patientPhone ?? '').replace(/\D/g, '');
   if (digits.length < 10) return null;
   const phone = digits.length === 10 ? `91${digits}` : digits;
@@ -199,17 +235,24 @@ export async function searchPatients(term) {
   if (!db || t.length < 2) return [];
   const cap = t.replace(/\b\w/g, (c) => c.toUpperCase()); // names are stored capitalised
   const q = /^[+\d\s-]{6,}$/.test(t)
-    ? query(collection(db, 'patients'), where('phone', '==', t), limit(20))
-    : query(collection(db, 'patients'), orderBy('name'), where('name', '>=', cap), where('name', '<=', `${cap}`), limit(20));
+    ? query(collection(db, 'patients'), ...scope('patients'), where('phone', '==', t), limit(20))
+    : query(collection(db, 'patients'), ...scope('patients'), orderBy('name'), where('name', '>=', cap), where('name', '<=', `${cap}`), limit(20));
   return (await getDocs(q)).docs.map((d) => ({ ...d.data(), id: d.id }));
 }
 
-// ---- Audit trail (auditLogs: append-only, admins read) ----
+// ---- Audit trail (auditLogs: append-only, the hospital's admins and the platform read) ----
 export function logAudit(user, action, module, details) {
-  if (!db || !auth.currentUser) return;
+  if (!db || !auth.currentUser) return Promise.resolve();
   const { uid, email } = auth.currentUser;
-  addDoc(collection(db, 'auditLogs'), { at: serverTimestamp(), uid, email, user, action, module, details })
-    .catch((err) => console.error('audit log', err));
+  return addDoc(collection(db, 'auditLogs'), {
+    at: serverTimestamp(), uid, email, user, action, module, details, hospitalId: tenant.hospitalId ?? 'platform',
+  }).catch((err) => console.error('audit log', err));
+}
+
+/** Logout is logged before the session ends (afterwards the rules no longer know who wrote it). */
+export async function signOutLogged() {
+  await logAudit(ROLE_LABELS[tenant.role] ?? 'User', 'Logout', 'Authentication', 'Signed out of the portal');
+  await auth.signOut();
 }
 
 const stamp = (d) => d.toLocaleString('en-GB', {
@@ -221,7 +264,7 @@ export function useAuditLogs(enabled) {
   const [logs, setLogs] = useState([]);
   useEffect(() => {
     if (!db || !enabled) return undefined;
-    return onSnapshot(query(collection(db, 'auditLogs'), orderBy('at', 'desc'), limit(500)),
+    return onSnapshot(query(collection(db, 'auditLogs'), ...scope('auditLogs'), orderBy('at', 'desc'), limit(500)),
       (snap) => setLogs(snap.docs.map((d) => {
         const x = d.data();
         return { ...x, id: d.id, user: `${x.user} (${x.email})`, timestamp: x.at ? stamp(x.at.toDate()) : 'just now' };
@@ -236,7 +279,7 @@ export function watchRecords(patientId, cb) {
   if (!db) return () => {};
   logAudit(ROLE_LABELS[cachedRole] ?? 'Staff', 'Viewed Medical Records', 'Patient Records', `Opened records of patient ${patientId}`);
   return onSnapshot(
-    query(collection(db, 'patients', patientId, 'records'), orderBy('createdAt', 'desc')),
+    query(collection(db, 'patients', patientId, 'records'), ...scope('records'), orderBy('createdAt', 'desc')),
     (snap) => cb(snap.docs.map((d) => ({ ...d.data(), id: d.id }))),
     (err) => console.error('records listener', err),
   );
@@ -250,15 +293,24 @@ export async function addRecord(patientId, record, file) {
     await uploadBytes(ref(storage, path), file);
     attachment = { fileUrl: await getDownloadURL(ref(storage, path)), fileName: file.name };
   }
-  return addDoc(collection(db, 'patients', patientId, 'records'), {
+  return addDoc(collection(db, 'patients', patientId, 'records'), stampFor('records', {
     ...record, ...attachment, createdAt: serverTimestamp(),
-  });
+  }, true));
 }
 
 let cachedRole = null;
+/** Loads users/{uid} into `tenant` (and the hospital doc); returns the role or null. */
 export async function loadUserRole(uid) {
   const snap = await getDoc(doc(db, 'users', uid));
-  cachedRole = snap.data()?.role ?? null;
+  const profile = snap.data() ?? {};
+  cachedRole = profile.role ?? null;
+  let picked = null;
+  try { picked = sessionStorage.getItem(PICK); } catch { /* ignore */ }
+  Object.assign(tenant, {
+    uid, profile, role: cachedRole,
+    hospitalId: cachedRole === 'super_admin' ? picked : profile.hospitalId ?? null,
+  });
+  if (tenant.hospitalId) tenant.hospital = { id: tenant.hospitalId, ...(await getDoc(doc(db, 'hospitals', tenant.hospitalId))).data() };
   return cachedRole;
 }
 
