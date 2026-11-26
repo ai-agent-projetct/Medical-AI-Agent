@@ -241,6 +241,24 @@ for (const d of [1, 2]) {
   await put(`counters/LV-DOC-${d}_${today}`, { next: 6 });
 }
 
+// Hospital suite history for the demo patient (patient app: Reports, vitals & bills).
+const ago = (n) => { const d = new Date(); d.setDate(d.getDate() - n); return d.toLocaleDateString('en-CA'); };
+const T = (code, name, unit, low, high, value, flag = '') => ({ code, name, unit, low, high, value, flag, note: '' });
+for (const [i, [hb, fbs, a1c]] of [['11.2', '148', '7.9'], ['11.8', '132', '7.4'], ['12.6', '112', '6.8']].entries()) {
+  await put(`labOrders/DEMO-LAB-${i}`, {
+    orderNo: `LAB-DEMO-${i + 1}`, sampleId: `SDEMO${i + 1}`, patientId: patientUid, patientName: 'Asha Patient', phone: '+91 98765 01234',
+    doctor: 'Dr. Priya Sharma', priority: 'Routine', date: ago(90 - i * 40), status: 'Verified', critical: false,
+    tests: [T('HB', 'Haemoglobin', 'g/dL', 12, 16, hb, Number(hb) < 12 ? 'L' : ''), T('FBS', 'Glucose (fasting)', 'mg/dL', 70, 100, fbs, 'H'), T('HBA1C', 'HbA1c', '%', 4, 5.6, a1c, 'H')],
+    hospitalId: H1, createdAt: now, updatedBy: 'system',
+  });
+}
+for (const [i, [hr, sbp, spo2, temp]] of [[96, 148, 97, 37.8], [88, 138, 98, 37.1], [80, 128, 99, 36.8]].entries()) {
+  await put(`vitals/DEMO-VIT-${i}`, { patientId: patientUid, patientName: 'Asha Patient', date: ago(3 - i), time: '09:00', hr, sbp, dbp: 84, spo2, temp, news2: i ? 0 : 1, risk: 'Low', hospitalId: H1, createdAt: now, updatedBy: 'system' });
+}
+await put('vaccinations/DEMO-VAX-1', { patientId: `${patientUid}-child`, patientName: 'Aarav Patient', vaccine: 'Typhoid', dose: 'Booster', dueDate: ago(-14), status: 'Due', hospitalId: H1, createdAt: now, updatedBy: 'system' });
+await put('vaccinations/DEMO-VAX-2', { patientId: patientUid, patientName: 'Asha Patient', vaccine: 'Influenza', dose: '2026', givenDate: ago(30), status: 'Given', hospitalId: H1, createdAt: now, updatedBy: 'system' });
+await put('invoices/DEMO-INV-1', { number: 'OPD/LAB/DEMO/1', kind: 'OPD', date: ago(10), patientId: patientUid, patientName: 'Asha Patient', phone: '+91 98765 01234', lines: [], total: 1160, paid: 600, due: 560, status: 'Partial', taxable: 1160, cgst: 0, sgst: 0, roundOff: 0, hospitalId: H1, createdAt: now, updatedBy: 'system' });
+
 console.log('Demo platform ready. Logins (emulator only):');
 for (const [role, email, password] of [...LOGINS, ['doctor (mobile app)', 'doctor@demo.test', 'demo-doctor-123'], ['patient (mobile app)', 'patient@demo.test', 'demo-patient-123']]) {
   console.log(`  ${role.padEnd(30)} ${email.padEnd(22)} ${password}`);

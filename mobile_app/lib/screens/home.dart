@@ -10,6 +10,7 @@ import 'online.dart';
 import 'profile.dart';
 import 'records.dart';
 import 'reports.dart';
+import 'insights.dart';
 import 'schedule.dart';
 
 class HomeShell extends StatefulWidget {
@@ -80,7 +81,15 @@ class DashboardTab extends StatelessWidget {
                 const SizedBox(width: 10),
                 const Text('Dashboard'),
               ]),
-              actions: homeActions(context),
+              actions: [
+                // Doctor dashboard only (homeActions is shared with the patient app).
+                IconButton(
+                  tooltip: 'My practice insights',
+                  onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const InsightsScreen())),
+                  icon: const Icon(Icons.insights_outlined),
+                ),
+                ...homeActions(context),
+              ],
             ),
             body: StreamBuilder<List<Appt>>(
               stream: Db.myDay(ymd(DateTime.now())),

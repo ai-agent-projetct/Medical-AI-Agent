@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../db.dart';
 import '../screens/records.dart' show RecordCard;
 import '../ui.dart';
+import 'health.dart';
 import 'pdb.dart';
 
 /// Health records for self and family: doctor notes, prescriptions and the patient's own uploads.
@@ -26,7 +27,15 @@ class _MyRecordsTabState extends State<MyRecordsTab> {
           final family = fam.data ?? [];
           final selected = family.where((m) => m.id == _member).firstOrNull ?? family.firstOrNull;
           return Scaffold(
-            appBar: AppBar(title: const Text('Health records')),
+            appBar: AppBar(title: const Text('Health records'), actions: [
+              if (selected != null)
+                TextButton.icon(
+                  onPressed: () => Navigator.push(context, MaterialPageRoute(
+                      builder: (_) => HealthScreen(patientId: selected.id, name: '${selected.data()['name'] ?? ''}'))),
+                  icon: const Icon(Icons.monitor_heart_outlined),
+                  label: const Text('Reports, vitals & bills'),
+                ),
+            ]),
             floatingActionButton: selected == null
                 ? null
                 : FloatingActionButton.extended(

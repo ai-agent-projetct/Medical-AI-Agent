@@ -531,6 +531,17 @@ describe('hospital suite (lab, nursing, ER, OT, HRMS, stores, accounts, services
     await assertFails(getDoc(doc(fs('recep2'), 'visitors/v1')));
     await assertSucceeds(getDoc(doc(fs('owner'), 'visitors/v1')));
   });
+  test('patients read their own bills (any hospital), not other patients bills', async () => {
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), 'invoices/i1'), { patientId: 'pat', total: 500, status: 'Paid', ...H1 });
+      await setDoc(doc(ctx.firestore(), 'invoices/i2'), { patientId: 'p1', total: 900, status: 'Paid', ...H1 });
+    });
+    await assertSucceeds(getDoc(doc(fs('pat'), 'invoices/i1')));
+    await assertFails(getDoc(doc(fs('pat'), 'invoices/i2')));
+    await assertFails(getDoc(doc(fs('pat2'), 'invoices/i1')));
+    await assertSucceeds(getDocs(query(collection(fs('pat'), 'invoices'), where('patientId', '==', 'pat'))));
+    await assertFails(updateDoc(doc(fs('pat'), 'invoices/i1'), { status: 'Cancelled' }));
+  });
   test('collections outside the suite map are not opened by the wildcard rule', async () => {
     await assertFails(setDoc(doc(fs('admin'), 'randomStuff/z1'), by('admin', H1)));
     await assertFails(getDoc(doc(fs('pat'), 'employees/e1')));

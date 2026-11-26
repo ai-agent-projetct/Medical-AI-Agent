@@ -305,7 +305,8 @@ service cloud.firestore {
 
     // Invoices are never deleted (GST series must stay gap-free); only admins cancel.
     match /invoices/{id} {
-      allow read: if readIn(STAFF());
+      // Patients (app) see their own bills from every hospital.
+      allow read: if readIn(STAFF()) || (isPatient() && ownsPatient(resource.data.get('patientId', '-')));
       allow create: if createIn(BILLING()) && by() && request.resource.data.status in ['Unpaid', 'Partial', 'Paid'];
       allow update: if by() && ((updateIn(BILLING()) && resource.data.status != 'Cancelled'
             && request.resource.data.status != 'Cancelled' && onlyChanges(['paid', 'due', 'status', 'updatedBy']))
