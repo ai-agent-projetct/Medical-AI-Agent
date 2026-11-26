@@ -23,7 +23,7 @@ if (process.argv.includes('--reset')) {
 {
   const w = await fetch(`${FS}/hospitals/${HOSPITAL}`, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer owner' },
-    body: JSON.stringify({ fields: { name: { stringValue: 'City General Hospital' }, city: { stringValue: 'Chennai' }, status: { stringValue: 'Active' }, plan: { stringValue: 'Enterprise' } } }),
+    body: JSON.stringify({ fields: { name: { stringValue: 'City General Hospital' }, city: { stringValue: 'Chennai' }, status: { stringValue: 'Active' }, plan: { stringValue: 'Enterprise' }, voiceNumber: { stringValue: '+914400000000' } } }), // number dialled by scripts/voice-call-sim.mjs
   });
   if (!w.ok) throw new Error(`hospital write ${w.status}`);
   console.log(`seeded hospital     ${HOSPITAL}`);

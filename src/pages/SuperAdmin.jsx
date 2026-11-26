@@ -97,7 +97,7 @@ export default function SuperAdmin() {
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <button className="btn btn-secondary" onClick={refresh} disabled={busy}><RefreshCw size={16} /> Refresh metrics</button>
-          <button className="btn btn-primary" onClick={() => setForm({ name: '', city: '', phone: '', email: '', gstin: '', plan: 'Pro' })}>
+          <button className="btn btn-primary" onClick={() => setForm({ name: '', city: '', phone: '', email: '', gstin: '', voiceNumber: '', receptionNumber: '', plan: 'Pro' })}>
             <Plus size={16} /> New hospital
           </button>
         </div>
@@ -133,7 +133,7 @@ export default function SuperAdmin() {
                     <td>{m?.users ?? '…'}</td><td>{m?.patients ?? '…'}</td><td>{m?.appointments ?? '…'}</td><td>{m ? inr(m.revenue) : '…'}</td>
                     <td style={{ whiteSpace: 'nowrap' }}>
                       <button className="btn btn-primary" title="Work inside this hospital" onClick={() => pickHospital(h.id)}><LogIn size={14} /> Open</button>{' '}
-                      <button className="btn btn-secondary" onClick={() => setForm({ id: h.id, name: h.name, city: h.city ?? '', phone: h.phone ?? '', email: h.email ?? '', gstin: h.gstin ?? '', plan: h.plan, modules: h.modules ?? PLANS[h.plan] })}>Edit</button>{' '}
+                      <button className="btn btn-secondary" onClick={() => setForm({ id: h.id, name: h.name, city: h.city ?? '', phone: h.phone ?? '', email: h.email ?? '', gstin: h.gstin ?? '', voiceNumber: h.voiceNumber ?? '', receptionNumber: h.receptionNumber ?? '', plan: h.plan, modules: h.modules ?? PLANS[h.plan] })}>Edit</button>{' '}
                       <button className="btn btn-secondary" onClick={() => setAdmin({ hospitalId: h.id, hospitalName: h.name, name: '', email: '', password: '' })}><UserPlus size={14} /> Admin</button>{' '}
                       <button className="btn btn-secondary" onClick={() => toggle(h)} disabled={busy}><Power size={14} /> {h.status === 'Suspended' ? 'Activate' : 'Suspend'}</button>
                     </td>
@@ -149,7 +149,8 @@ export default function SuperAdmin() {
       {form && (
         <Modal title={form.id ? `Edit ${form.name}` : 'New hospital'} onClose={() => setForm(null)}
           footer={<button className="btn btn-primary" disabled={busy || !form.name.trim()} onClick={saveHospital}>Save</button>}>
-          {[['name', 'Hospital name'], ['city', 'City'], ['phone', 'Phone'], ['email', 'Email'], ['gstin', 'GSTIN']].map(([k, label]) => (
+          {[['name', 'Hospital name'], ['city', 'City'], ['phone', 'Phone'], ['email', 'Email'], ['gstin', 'GSTIN'],
+            ['voiceNumber', 'AI voice line (Twilio number, +91…)'], ['receptionNumber', 'Reception number (calls transfer here)']].map(([k, label]) => (
             <div className="form-group" key={k}>
               <label>{label}</label>
               <input className="form-input" aria-label={label} value={form[k]} onChange={(e) => setForm({ ...form, [k]: e.target.value })} />
